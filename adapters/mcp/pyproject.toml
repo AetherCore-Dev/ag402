@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "HTTP payment gateway adapter for Ag402 — wraps any API with x402 payment verification"
 license = "MIT"
 readme = "README.md"

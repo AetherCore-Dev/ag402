@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Payment engine for AI Agents — automatic HTTP 402 payment with Solana USDC"
 license = "MIT"
 readme = "README.md"
