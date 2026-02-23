@@ -1,0 +1,211 @@
+# Ag402
+
+> Payment infrastructure for the AI Agent economy — Powered by the Open402 standard
+
+## What This Does
+
+Ag402 is a Python library that gives AI Agents the ability to autonomously pay for API calls.
+When a target API returns HTTP 402 (Payment Required) with x402 headers, Ag402 automatically
+pays with Solana USDC and retries the request. The agent sees only the final 200 response.
+
+Four composable packages:
+- `open402` -- Protocol standard (zero dependencies)
+- `ag402-core` -- Payment engine (wallet, limits, retry, CLI, monkey-patch SDK)
+- `ag402-mcp` -- HTTP gateway adapter (for API providers / seller side)
+- `ag402-client-mcp` -- MCP client adapter (for Claude Code, Cursor, OpenClaw / buyer side)
+
+## Quick Start (30 seconds)
+
+```bash
+pip install ag402-core
+ag402 setup        # Interactive wizard, set a wallet password, get 100 USDC test funds
+ag402 demo         # Watch the full auto-pay flow in action
+```
+
+Zero config needed — default mode is TEST with virtual funds.
+
+## Integration — Two Lines of Code
+
+### Method 1: Monkey-patch (recommended, zero code changes)
+
+```python
+import ag402_core
+ag402_core.enable()   # All HTTP 402 responses are auto-handled from now on
+
+# Your existing agent code — unchanged
+response = httpx.get("https://paid-api.example.com/data")
+```
+
+Works with any framework using `httpx` or `requests` (LangChain, AutoGen, CrewAI, etc.)
+
+### Method 2: Context manager (fine-grained control)
+
+```python
+with ag402_core.enabled():
+    result = requests.get("https://paid-api.example.com/search?q=AI")
+# Outside the block, requests behave normally
+```
+
+### Method 3: CLI runner
+
+```bash
+ag402 run -- python my_agent.py              # Any Python script
+```
+
+### Method 4: MCP Client (for Claude Code, Cursor, OpenClaw)
+
+```bash
+pip install ag402-client-mcp
+ag402 install cursor              # One command — auto-writes .cursor/mcp.json
+# or: ag402 install claude-code   # Auto-writes .claude/settings.local.json
+# or: ag402 install openclaw      # Auto-configures via mcporter
+```
+
+Restart your AI tool — Ag402 tools will appear automatically.
+
+Exposes three MCP Tools:
+- `fetch_with_autopay(url, method, headers, body, max_amount)` -- HTTP request with auto x402 payment
+- `wallet_status()` -- Check balance and budget usage
+- `transaction_history(limit)` -- View recent payment history
+
+Manual config alternative: `ag402 mcp-config cursor` to print JSON for manual copy.
+
+### Method 5: Direct Python API
+
+```python
+from ag402_core.wallet.agent_wallet import AgentWallet
+from ag402_core.payment.solana_adapter import MockSolanaAdapter
+from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
+from ag402_core.config import X402Config, RunMode
+
+config = X402Config(mode=RunMode.TEST)
+wallet = AgentWallet(db_path="x402_wallet.db")
+await wallet.init_db()
+await wallet.deposit(10.0, note="test funds")
+
+provider = MockSolanaAdapter()  # or SolanaAdapter for production
+middleware = X402PaymentMiddleware(wallet, provider, config)
+
+result = await middleware.handle_request("GET", "https://api.example.com/data")
+# result.status_code, result.body, result.payment_made, result.tx_hash
+```
+
+## Integration (Service Provider Side)
+
+```bash
+pip install ag402-mcp
+ag402 serve --target http://localhost:8000 --price 0.05 --address <YourSolanaAddress>
+```
+
+Requests without valid payment proof → 402.  Requests with valid x402 proof → proxied to your API.
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `ag402 setup` | Interactive setup wizard (recommended for first use) |
+| `ag402 init` | Initialize wallet + auto-deposit test funds |
+| `ag402 run <target>` | Launch Agent with auto x402 payment injection |
+| `ag402 mcp` | Start MCP payment server for Claude Code / Cursor / OpenClaw |
+| `ag402 install <tool>` | One-command MCP setup (claude-code, cursor, openclaw) |
+| `ag402 mcp-config` | Generate MCP configs for AI tools |
+| `ag402 demo` | Full E2E payment demo (zero config) |
+| `ag402 serve` | Start payment gateway (provider mode, auto-starts demo backend if needed) |
+| `ag402 pay <url>` | Send a single request with x402 auto-payment (6-step visualization) |
+| `ag402 status` | Dashboard: balance, budget bars, security layers, recent txns |
+| `ag402 balance` | Quick balance + budget usage with progress bars |
+| `ag402 history` | Transaction history with stats and per-address breakdown |
+| `ag402 tx <id>` | Single transaction detail (supports prefix match) |
+| `ag402 config` | Safety limits and configuration |
+| `ag402 env show` | Show current configuration and sources |
+| `ag402 env set <key> <val>` | Set a single config value |
+| `ag402 info` | Protocol version, Python version, JSON schema |
+| `ag402 doctor` | Environment health check |
+| `ag402 upgrade` | Migrate from test mode to production |
+| `ag402 export` | Export history to JSON/CSV |
+| `ag402 help` | Show categorized help with usage hints |
+
+## Key Environment Variables
+
+All configurable via `~/.ag402/.env` (auto-generated by `ag402 setup`) or env vars:
+
+- `X402_MODE`: "test" (default) for virtual funds, "production" for real payments
+- `SOLANA_PRIVATE_KEY`: base58 encoded Solana private key
+- `SOLANA_RPC_URL`: Solana RPC endpoint (default: devnet)
+- `SOLANA_RPC_BACKUP_URL`: Backup RPC for failover
+- `X402_SINGLE_TX_LIMIT`: max per-transaction amount in USD (default: 5.0)
+- `X402_DAILY_LIMIT`: daily spend cap in USD (default: 10.0, hard ceiling: $1000)
+- `X402_PER_MINUTE_LIMIT`: per-minute dollar cap (default: 2.0)
+- `X402_PER_MINUTE_COUNT`: per-minute transaction count (default: 5)
+- `X402_CIRCUIT_BREAKER_THRESHOLD`: consecutive failures before circuit opens (default: 3)
+- `X402_CIRCUIT_BREAKER_COOLDOWN`: cooldown seconds (default: 60)
+- `X402_WALLET_DB`: SQLite database path (default: ~/.ag402/wallet.db)
+- `X402_RATE_LIMIT`: requests per minute (default: 60)
+- `X402_FALLBACK_API_KEY`: Bearer token for non-x402 APIs (dual-mode)
+- `AG402_UNLOCK_PASSWORD`: wallet unlock password for Docker/CI automation
+
+## Safety (6 Layers)
+
+1. Single-TX cap: $5.00 (hardcoded ceiling)
+2. Per-minute cap: $2.00 / 5 txns (configurable via env)
+3. Daily cap: $10.00 (configurable via env, hard ceiling: $1000)
+4. Circuit breaker: auto-stops after 3 consecutive failures
+5. Auto-rollback: failed payments reverse wallet deductions
+6. Private key filter: redacts all key patterns from logs
+
+## Wallet Encryption
+
+Private keys are **never stored in plaintext**, even in test mode.
+Encryption: PBKDF2-HMAC-SHA256 + Fernet (AES).
+Plaintext key only exists in memory during active use.
+
+For Docker/CI: `docker run -e AG402_UNLOCK_PASSWORD=my_password ...`
+
+## Security Design
+
+- **Non-custodial**: No central server. Private keys stay on your machine.
+- **Zero telemetry**: No usage tracking, no IP logging, no analytics.
+- **Open source**: 100% auditable. MIT license.
+
+## Protocol
+
+HTTP 402 response includes:
+```
+WWW-Authenticate: x402 chain="solana" token="USDC" amount="0.05" address="..."
+```
+
+Client retries with:
+```
+Authorization: x402 <solana_tx_hash>
+```
+
+Compatible with the Coinbase x402 standard.
+
+## V1 Compatibility
+
+- Python ecosystem: ★★★★★ (LangChain, AutoGen, CrewAI, any httpx/requests agent)
+- Claude Code / Cursor / OpenClaw: ★★★★★ (via ag402-client-mcp, MCP protocol)
+- Node.js / desktop: V2 planned (native plugin approach)
+
+## File Structure
+
+```
+protocol/open402/                  -- x402 spec, header parsing, version negotiation (zero deps)
+core/ag402_core/config.py       -- Configuration (X402Config, auto-loads ~/.ag402/.env)
+core/ag402_core/wallet/         -- SQLite ledger, budget tracking, test faucet, payment order state machine
+core/ag402_core/payment/        -- Payment providers (Solana, mock, registry, retry + failover)
+core/ag402_core/middleware/     -- Core 402 interception + budget guard + payment order lifecycle
+core/ag402_core/gateway/        -- Server-side payment gate + auth
+core/ag402_core/security/       -- Key guard, wallet encryption, rate limiter, replay guard (in-memory + persistent)
+core/ag402_core/monkey.py       -- enable()/disable()/enabled() monkey-patch SDK
+core/ag402_core/proxy/          -- HTTP forward proxy (x402 interception)
+core/ag402_core/runners/        -- Agent runners (generic Python)
+core/ag402_core/env_manager.py  -- Zero-dependency .env file parser
+core/ag402_core/setup_wizard.py -- Interactive setup wizard
+core/ag402_core/friendly_errors.py -- Human-readable CLI error messages
+core/ag402_core/terminal.py     -- Shared ANSI color/formatting utilities
+core/ag402_core/cli.py          -- CLI tool (18 commands with colorized output, pay/serve auto-backend)
+adapters/mcp/ag402_mcp/         -- HTTP gateway adapter (ag402-gateway CLI, persistent tx_hash dedup)
+adapters/client_mcp/ag402_client_mcp/ -- MCP client adapter (ag402-mcp-client CLI, stdio/SSE)
+examples/                          -- Demo scripts
+```

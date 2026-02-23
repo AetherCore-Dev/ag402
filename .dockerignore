@@ -1,0 +1,40 @@
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Database files
+*.db
+*.db.bak
+*.db-journal
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Development files
+tests/
+docs/
+examples/
+*.txt
+*.md
+.github/
+.git/
+.gitignore
+ruff.toml
+Makefile
+
+# IDE
+.vscode/
+.idea/
+.codebuddy/
+
+# OS
+.DS_Store
+Thumbs.db

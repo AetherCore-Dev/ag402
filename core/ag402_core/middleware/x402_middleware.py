@@ -1,0 +1,352 @@
+"""
+x402 Payment Middleware — the core of ag402-core.
+
+Intercepts HTTP requests, detects 402 Payment Required responses,
+auto-pays via the configured payment provider, and retries with proof.
+
+State machine integration (P0-2):
+- Uses PaymentOrder + PaymentOrderStore to track payment lifecycle.
+- After chain broadcast succeeds, retry failures do NOT rollback local wallet.
+- Failed deliveries are left in DELIVERING state for async background retry.
+- Idempotency-Key header is injected into all retry requests.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from dataclasses import dataclass, field
+
+import httpx
+from open402.headers import (
+    ParsedExtensionHeaders,
+    build_authorization,
+    parse_www_authenticate,
+)
+from open402.negotiation import get_version_header
+from open402.spec import X402PaymentProof
+
+from ag402_core.config import X402Config
+from ag402_core.middleware.budget_guard import BudgetGuard
+from ag402_core.payment.base import BasePaymentProvider
+from ag402_core.security.challenge_validator import validate_challenge
+from ag402_core.security.replay_guard import generate_replay_headers
+from ag402_core.wallet.agent_wallet import AgentWallet
+from ag402_core.wallet.payment_order import OrderState, PaymentOrder, PaymentOrderStore
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MiddlewareResult:
+    """Result of processing a request through the x402 middleware."""
+
+    status_code: int
+    headers: dict[str, str] = field(default_factory=dict)
+    body: bytes = b""
+    payment_made: bool = False
+    tx_hash: str = ""
+    amount_paid: float = 0.0
+    error: str = ""
+
+
+class X402PaymentMiddleware:
+    """Intercepts HTTP requests, handles 402 payment challenges, auto-pays and retries.
+
+    When an ``order_store`` is provided, the middleware tracks each payment
+    through a strict state machine.  After the chain transaction is
+    broadcasted (tx_hash obtained), **the local wallet deduction is never
+    rolled back** — even if the subsequent retry request to the service
+    returns an error.  Instead the order is placed into ``DELIVERING``
+    state for asynchronous background retry.
+    """
+
+    def __init__(
+        self,
+        wallet: AgentWallet,
+        provider: BasePaymentProvider,
+        config: X402Config,
+        http_client: httpx.AsyncClient | None = None,
+        order_store: PaymentOrderStore | None = None,
+    ):
+        self.wallet = wallet
+        self.provider = provider
+        self.config = config
+        self.budget_guard = BudgetGuard(wallet, config)
+        self._client = http_client or httpx.AsyncClient(timeout=30.0)
+        self._order_store = order_store
+        # P1-2.5: Serialize budget-check + deduct to prevent TOCTOU race
+        self._payment_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def handle_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        max_amount: float | None = None,
+    ) -> MiddlewareResult:
+        """
+        Process an outbound HTTP request through the x402 middleware.
+
+        Flow:
+        1. Forward request to target (with version + extension headers)
+        2. If 402 with x402 headers -> budget check -> pay -> retry
+        3. If 402 without x402 -> pass through
+        4. If non-402 -> pass through
+
+        State machine (when order_store is available):
+            CREATED -> LOCAL_DEDUCTED -> CHAIN_BROADCASTED -> DELIVERING -> SUCCESS
+                                          (or REFUNDED if chain fails)
+        """
+        req_headers = dict(headers or {})
+        # Inject protocol version header
+        req_headers.update(get_version_header())
+        # Inject replay protection headers (timestamp + nonce)
+        req_headers.update(generate_replay_headers())
+        # Inject extension headers (V1: passthrough only)
+        ext = ParsedExtensionHeaders(
+            x402_version=self.config.protocol_version,
+        )
+        req_headers.update(ext.to_headers())
+
+        # 1. Forward request
+        logger.info("[REQUEST] %s %s", method, url)
+        response = await self._send(method, url, req_headers, body)
+
+        # 2. Non-402 -> pass through
+        if response.status_code != 402:
+            return self._wrap_response(response)
+
+        # 3. Parse x402 challenge
+        logger.info("[INTERCEPT] Received HTTP 402 Payment Required")
+        www_auth = response.headers.get("www-authenticate", "")
+        challenge = parse_www_authenticate(www_auth)
+
+        if challenge is None:
+            # Not an x402 402 — try fallback API key if configured
+            if self.config.fallback_api_key:
+                logger.info("[FALLBACK] Non-x402 402 detected, retrying with fallback API key")
+                fallback_headers = dict(req_headers)
+                fallback_headers["Authorization"] = f"Bearer {self.config.fallback_api_key}"
+                fallback_response = await self._send(method, url, fallback_headers, body)
+                return self._wrap_response(fallback_response)
+            logger.info("[INTERCEPT] Not an x402 challenge, passing through")
+            return self._wrap_response(response)
+
+        logger.info(
+            "[QUOTE] Price: $%s %s -> %s (chain: %s)",
+            challenge.amount, challenge.token, challenge.address, challenge.chain,
+        )
+
+        # 4. Validate challenge before paying
+        amount = challenge.amount_float
+        validation = validate_challenge(url, amount, challenge.address, challenge.token, self.config)
+        if not validation.valid:
+            logger.warning("[VALIDATE] Challenge rejected: %s", validation.error)
+            return MiddlewareResult(
+                status_code=402,
+                headers=dict(response.headers),
+                body=response.content,
+                error=f"Challenge validation failed: {validation.error}",
+            )
+
+        # 5-6. Budget check + deduct under lock to prevent TOCTOU race
+        # (multiple concurrent requests could otherwise all pass budget check
+        # before any deduction is recorded, exceeding the budget)
+        async with self._payment_lock:
+            budget_result = await self.budget_guard.check(amount, max_amount=max_amount)
+            if not budget_result.allowed:
+                logger.warning("[BUDGET] Payment blocked: %s", budget_result.reason)
+                return MiddlewareResult(
+                    status_code=402,
+                    headers=dict(response.headers),
+                    body=response.content,
+                    error=f"Budget denied: {budget_result.reason}",
+                )
+
+            # --- State Machine: create order ---
+            order = await self._create_order(
+                amount=amount,
+                to_address=challenge.address,
+                token=challenge.token,
+                chain=challenge.chain,
+                request_url=url,
+                request_method=method,
+                request_headers=json.dumps(dict(req_headers)),
+                request_body=body or b"",
+            )
+
+            # 6. Deduct from local wallet (pre-payment reservation)
+            deduction_tx = await self.wallet.deduct(
+                amount=amount,
+                to_address=challenge.address,
+            )
+            logger.info("[DEDUCT] Reserved $%.4f from wallet (tx: %s)", amount, deduction_tx.id)
+            await self._transition_order(order, OrderState.LOCAL_DEDUCTED, wallet_tx_id=deduction_tx.id)
+
+        # 7. Pay on-chain
+        logger.info("[PAY] Sending $%.4f %s to %s...", amount, challenge.token, challenge.address)
+        payment_result = await self.provider.pay(
+            to_address=challenge.address,
+            amount=amount,
+            token=challenge.token,
+        )
+
+        if not payment_result.success:
+            # Payment failed (before broadcast) -> rollback wallet deduction
+            logger.error("[PAY] Payment failed: %s -- rolling back", payment_result.error)
+            await self.wallet.rollback(deduction_tx.id)
+            logger.info("[ROLLBACK] Wallet deduction reversed")
+            await self._transition_order(
+                order, OrderState.REFUNDED, error_message=payment_result.error,
+            )
+            return MiddlewareResult(
+                status_code=402,
+                headers=dict(response.headers),
+                body=response.content,
+                error=f"Payment failed: {payment_result.error}",
+            )
+
+        logger.info("[PAY] Success -- tx: %s", payment_result.tx_hash)
+        await self._transition_order(
+            order, OrderState.CHAIN_BROADCASTED, tx_hash=payment_result.tx_hash,
+        )
+
+        # === POINT OF NO RETURN ===
+        # After this point, the chain transaction is real.
+        # We MUST NOT rollback the local wallet deduction,
+        # even if the retry request fails.
+
+        # 8. Retry with payment proof + Idempotency-Key
+        proof = X402PaymentProof(
+            tx_hash=payment_result.tx_hash,
+            chain=challenge.chain,
+            payer_address=self.provider.get_address(),
+        )
+        retry_headers = dict(req_headers)
+        retry_headers["Authorization"] = build_authorization(proof)
+        retry_headers["Idempotency-Key"] = order.idempotency_key if order else ""
+
+        # Transition to DELIVERING before making the retry request
+        await self._transition_order(order, OrderState.DELIVERING)
+
+        logger.info("[RETRY] Retrying request with payment proof...")
+        retry_response = await self._send(method, url, retry_headers, body)
+
+        if retry_response.status_code >= 400:
+            # Retry failed — DO NOT rollback (chain payment is real)
+            # Leave order in DELIVERING state for async background worker
+            logger.error(
+                "[RETRY] Failed with status %d -- order stays in DELIVERING for async retry",
+                retry_response.status_code,
+            )
+            if order:
+                order.retry_count += 1
+                order.error_message = f"Retry failed with status {retry_response.status_code}"
+                await self._save_order(order)
+            return MiddlewareResult(
+                status_code=retry_response.status_code,
+                headers=dict(retry_response.headers),
+                body=retry_response.content,
+                payment_made=True,
+                tx_hash=payment_result.tx_hash,
+                amount_paid=amount,
+                error=f"Retry failed with status {retry_response.status_code}",
+            )
+
+        # Success — mark order as complete
+        await self._transition_order(order, OrderState.SUCCESS)
+        logger.info("[SUCCESS] Request completed after payment ($%.4f)", amount)
+        return MiddlewareResult(
+            status_code=retry_response.status_code,
+            headers=dict(retry_response.headers),
+            body=retry_response.content,
+            payment_made=True,
+            tx_hash=payment_result.tx_hash,
+            amount_paid=amount,
+        )
+
+    # --- State machine helpers ---
+
+    async def _create_order(
+        self,
+        amount: float,
+        to_address: str,
+        token: str,
+        chain: str,
+        request_url: str,
+        request_method: str,
+        request_headers: str = "",
+        request_body: bytes = b"",
+    ) -> PaymentOrder | None:
+        """Create a new PaymentOrder and persist it (if store available)."""
+        order = PaymentOrder(
+            amount=amount,
+            to_address=to_address,
+            token=token,
+            chain=chain,
+            request_url=request_url,
+            request_method=request_method,
+            request_headers=request_headers,
+            request_body=request_body,
+        )
+        if self._order_store:
+            await self._order_store.save(order)
+        return order if self._order_store else None
+
+    async def _transition_order(
+        self,
+        order: PaymentOrder | None,
+        new_state: OrderState,
+        *,
+        wallet_tx_id: str = "",
+        tx_hash: str = "",
+        error_message: str = "",
+    ) -> None:
+        """Transition the order state and persist (if store available)."""
+        if order is None:
+            return
+        order.transition_to(
+            new_state,
+            wallet_tx_id=wallet_tx_id,
+            tx_hash=tx_hash,
+            error_message=error_message,
+        )
+        if self._order_store:
+            await self._order_store.update(order)
+
+    async def _save_order(self, order: PaymentOrder | None) -> None:
+        """Save order updates (retry_count, error, etc.)."""
+        if order is None or self._order_store is None:
+            return
+        await self._order_store.update(order)
+
+    # --- HTTP helpers ---
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+    ) -> httpx.Response:
+        """Send an HTTP request via httpx."""
+        return await self._client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            content=body,
+        )
+
+    def _wrap_response(self, response: httpx.Response) -> MiddlewareResult:
+        """Wrap an httpx Response into a MiddlewareResult."""
+        return MiddlewareResult(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            body=response.content,
+        )

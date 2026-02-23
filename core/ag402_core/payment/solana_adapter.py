@@ -1,0 +1,504 @@
+"""Solana USDC payment adapter and mock for test mode."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+
+from ag402_core.payment.base import BasePaymentProvider, PaymentResult
+
+logger = logging.getLogger(__name__)
+
+# SPL Memo Program ID (official)
+MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+
+# Brand memo injected into every transaction
+AG402_MEMO = "Ag402-v1"
+
+# ---------------------------------------------------------------------------
+# Real Solana adapter
+# ---------------------------------------------------------------------------
+
+class SolanaAdapter(BasePaymentProvider):
+    """SPL-Token (USDC) payments on Solana via solana-py / solders.
+
+    Heavy dependencies (``solana``, ``solders``) are imported lazily so the
+    rest of the package works even when they are not installed.
+
+    Features:
+    - Automatic retry with exponential backoff on RPC failures
+    - Multi-endpoint failover via ``rpc_backup_url``
+    - ATA auto-creation for recipients
+    - Memo injection ("Ag402-v1")
+    - ``confirmation_status`` in PaymentResult for clarity on confirmation outcome
+    """
+
+    def __init__(
+        self,
+        private_key: str,
+        rpc_url: str = "https://api.devnet.solana.com",
+        usdc_mint: str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        confirm_timeout: int = 30,
+        confirmation_level: str = "confirmed",
+        rpc_backup_url: str = "",
+        max_rpc_retries: int = 2,
+    ) -> None:
+        # Lazy-import heavy crypto dependencies
+        try:
+            from solana.rpc.async_api import AsyncClient  # type: ignore[import-untyped]
+            from solders.keypair import Keypair  # type: ignore[import-untyped]
+            from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "Solana dependencies are not installed. "
+                "Install them with:  pip install 'ag402-core[crypto]'"
+            ) from exc
+
+        self._Pubkey = Pubkey
+        self._AsyncClient = AsyncClient
+        self._keypair: Keypair = Keypair.from_base58_string(private_key)
+        self._rpc_url = rpc_url
+        self._usdc_mint = Pubkey.from_string(usdc_mint)
+        self._confirm_timeout = confirm_timeout
+        self._max_rpc_retries = max_rpc_retries
+
+        # P2-3.1: Configurable confirmation level ("confirmed" or "finalized")
+        if confirmation_level not in ("confirmed", "finalized"):
+            raise ValueError(
+                f"confirmation_level must be 'confirmed' or 'finalized', got {confirmation_level!r}"
+            )
+        self._confirmation_level = confirmation_level
+
+        # Multi-endpoint failover
+        from ag402_core.payment.retry import MultiEndpointClient
+
+        backup_urls = [rpc_backup_url] if rpc_backup_url else []
+        self._endpoint_mgr = MultiEndpointClient(rpc_url, backup_urls)
+        self._client = AsyncClient(self._endpoint_mgr.current_url, commitment=confirmation_level)
+
+        logger.warning(
+            "Private key loaded into memory. Consider using HSM in production."
+        )
+
+    def _reconnect_client(self) -> None:
+        """Reconnect to the current endpoint (after failover)."""
+        self._client = self._AsyncClient(
+            self._endpoint_mgr.current_url, commitment=self._confirmation_level
+        )
+
+    # -- BasePaymentProvider interface --------------------------------------
+
+    async def pay(
+        self, to_address: str, amount: float, token: str = "USDC"
+    ) -> PaymentResult:
+        """Execute an SPL Token transfer of USDC on Solana.
+
+        Includes:
+        - ATA auto-creation for recipient if needed
+        - Memo instruction "Ag402-v1" (best-effort)
+        - Transaction confirmation wait
+
+        Compatible with solana-py >=0.36.0 / solders >=0.21.0.
+        """
+        try:
+            from solders.instruction import AccountMeta, Instruction  # type: ignore[import-untyped]
+            from solders.message import Message  # type: ignore[import-untyped]
+            from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+            from solders.transaction import Transaction  # type: ignore[import-untyped]
+            from spl.token.constants import TOKEN_PROGRAM_ID  # type: ignore[import-untyped]
+            from spl.token.instructions import (  # type: ignore[import-untyped]
+                TransferCheckedParams,
+                get_associated_token_address,
+                transfer_checked,
+            )
+
+            recipient = Pubkey.from_string(to_address)
+
+            # Derive associated token accounts
+            sender_ata = get_associated_token_address(
+                self._keypair.pubkey(), self._usdc_mint
+            )
+            recipient_ata = get_associated_token_address(
+                recipient, self._usdc_mint
+            )
+
+            # USDC has 6 decimals — use round() to avoid float truncation
+            lamport_amount = round(amount * 1_000_000)
+
+            instructions = []
+
+            # 7.2: ATA auto-creation — check if recipient ATA exists
+            # Always use "confirmed" commitment for ATA check to avoid
+            # false negatives when client defaults to "finalized".
+            try:
+                acct_info = await asyncio.wait_for(
+                    self._client.get_account_info(
+                        recipient_ata, commitment="confirmed"
+                    ),
+                    timeout=self._confirm_timeout,
+                )
+                if acct_info.value is None:
+                    from spl.token.instructions import (  # type: ignore[import-untyped]
+                        create_associated_token_account,
+                    )
+                    create_ata_ix = create_associated_token_account(
+                        payer=self._keypair.pubkey(),
+                        owner=recipient,
+                        mint=self._usdc_mint,
+                    )
+                    instructions.append(create_ata_ix)
+                    logger.info("[ATA] Creating recipient ATA for %s", to_address[:16])
+            except asyncio.TimeoutError:
+                logger.warning("[ATA] Timed out checking ATA for %s", to_address[:16])
+            except Exception as ata_err:
+                logger.warning("[ATA] Could not check/create ATA: %s", ata_err)
+
+            # Transfer instruction
+            ix = transfer_checked(
+                TransferCheckedParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    source=sender_ata,
+                    mint=self._usdc_mint,
+                    dest=recipient_ata,
+                    owner=self._keypair.pubkey(),
+                    amount=lamport_amount,
+                    decimals=6,
+                )
+            )
+            instructions.append(ix)
+
+            # 7.1: Memo injection (best-effort — failure doesn't block payment)
+            try:
+                memo_program = Pubkey.from_string(MEMO_PROGRAM_ID)
+                memo_ix = Instruction(
+                    program_id=memo_program,
+                    data=AG402_MEMO.encode("utf-8"),
+                    accounts=[
+                        AccountMeta(
+                            pubkey=self._keypair.pubkey(),
+                            is_signer=True,
+                            is_writable=False,
+                        )
+                    ],
+                )
+                instructions.append(memo_ix)
+            except Exception as memo_err:
+                logger.warning("[MEMO] Failed to add memo: %s", memo_err)
+
+            # Build transaction with solders API (solana-py >= 0.36)
+            # Use retry_with_backoff + multi-endpoint failover for RPC calls
+            from ag402_core.payment.retry import retry_with_backoff
+
+            async def _get_blockhash():
+                return await asyncio.wait_for(
+                    self._client.get_latest_blockhash(),
+                    timeout=self._confirm_timeout,
+                )
+
+            try:
+                blockhash_resp = await retry_with_backoff(
+                    _get_blockhash,
+                    max_retries=self._max_rpc_retries,
+                    base_delay=0.5,
+                    label="get_latest_blockhash",
+                )
+            except Exception:
+                # Try failover endpoint before giving up
+                new_url = self._endpoint_mgr.failover()
+                if new_url:
+                    self._reconnect_client()
+                    blockhash_resp = await asyncio.wait_for(
+                        self._client.get_latest_blockhash(),
+                        timeout=self._confirm_timeout,
+                    )
+                else:
+                    raise
+
+            recent_blockhash = blockhash_resp.value.blockhash
+
+            msg = Message.new_with_blockhash(
+                instructions,
+                self._keypair.pubkey(),
+                recent_blockhash,
+            )
+            txn = Transaction.new_unsigned(msg)
+            txn.sign([self._keypair], recent_blockhash)
+
+            # Always use "confirmed" for preflight simulation to avoid
+            # AccountNotFound errors on test-validator where finalized
+            # bank lags behind confirmed bank.
+            from solana.rpc.types import TxOpts  # type: ignore[import-untyped]
+
+            opts = TxOpts(
+                skip_preflight=False,
+                preflight_commitment="confirmed",
+            )
+
+            async def _send_tx():
+                return await asyncio.wait_for(
+                    self._client.send_transaction(txn, opts=opts),
+                    timeout=self._confirm_timeout,
+                )
+
+            try:
+                resp = await retry_with_backoff(
+                    _send_tx,
+                    max_retries=self._max_rpc_retries,
+                    base_delay=0.5,
+                    label="send_transaction",
+                )
+            except Exception:
+                new_url = self._endpoint_mgr.failover()
+                if new_url:
+                    self._reconnect_client()
+                    resp = await asyncio.wait_for(
+                        self._client.send_transaction(txn, opts=opts),
+                        timeout=self._confirm_timeout,
+                    )
+                else:
+                    raise
+
+            tx_hash = str(resp.value)
+
+            # Reset endpoint manager to primary after successful send
+            self._endpoint_mgr.reset()
+
+            # 7.3: Wait for transaction confirmation at configured level
+            # Use a shorter timeout for confirm (max 15s) to avoid hanging
+            confirm_wait = min(self._confirm_timeout, 15)
+            confirmation_status = "sent"  # default: sent but not yet confirmed
+            try:
+                await asyncio.wait_for(
+                    self._client.confirm_transaction(
+                        resp.value, commitment=self._confirmation_level
+                    ),
+                    timeout=confirm_wait,
+                )
+                confirmation_status = self._confirmation_level
+                logger.info("[CONFIRM] Transaction %s at %s",
+                            tx_hash[:16], self._confirmation_level)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[CONFIRM] Timed out waiting for %s confirmation of tx %s "
+                    "(tx may still succeed on-chain)",
+                    self._confirmation_level, tx_hash[:16],
+                )
+            except Exception as confirm_err:
+                logger.warning(
+                    "[CONFIRM] Confirmation wait failed (tx may still succeed): %s",
+                    confirm_err,
+                )
+
+            return PaymentResult(
+                tx_hash=tx_hash, success=True, chain="solana", memo=AG402_MEMO,
+                confirmation_status=confirmation_status,
+            )
+
+        except Exception as exc:
+            return PaymentResult(
+                tx_hash="", success=False, error=str(exc), chain="solana"
+            )
+
+    async def check_balance(self) -> float:
+        """Query USDC token balance for this wallet."""
+        try:
+            from spl.token.async_client import AsyncToken  # type: ignore[import-untyped]
+            from spl.token.constants import TOKEN_PROGRAM_ID  # type: ignore[import-untyped]
+            from spl.token.instructions import (
+                get_associated_token_address,  # type: ignore[import-untyped]
+            )
+
+            token_client = AsyncToken(
+                conn=self._client,
+                pubkey=self._usdc_mint,
+                program_id=TOKEN_PROGRAM_ID,
+                payer=self._keypair,
+            )
+            ata = get_associated_token_address(
+                self._keypair.pubkey(), self._usdc_mint
+            )
+            info = await asyncio.wait_for(
+                token_client.get_balance(ata),
+                timeout=self._confirm_timeout,
+            )
+            # info.value.ui_amount is already a float
+            return float(info.value.ui_amount or 0.0)
+        except asyncio.TimeoutError:
+            logger.warning("[BALANCE] Timed out querying balance")
+            return 0.0
+        except Exception:
+            return 0.0
+
+    async def verify_payment(
+        self,
+        tx_hash: str,
+        expected_amount: float = 0,
+        expected_address: str = "",
+        expected_sender: str = "",
+    ) -> bool:
+        """Verify a payment transaction exists, is confirmed, and matches expected amount/address/sender."""
+        try:
+            from solders.signature import Signature  # type: ignore[import-untyped]
+
+            sig = Signature.from_string(tx_hash)
+            # Use "confirmed" commitment for get_transaction to ensure
+            # recently landed transactions are visible (test-validator
+            # finalized bank can lag significantly).
+            # Retry a few times because recently confirmed txs may not
+            # be immediately queryable.
+            resp = None
+            for _attempt in range(5):
+                resp = await asyncio.wait_for(
+                    self._client.get_transaction(
+                        sig, max_supported_transaction_version=0,
+                        commitment="confirmed",
+                    ),
+                    timeout=self._confirm_timeout,
+                )
+                if resp.value is not None:
+                    break
+                await asyncio.sleep(0.5)
+
+            if resp is None or resp.value is None:
+                return False
+
+            # If no expected amount/address, just confirm existence
+            if expected_amount <= 0:
+                return True
+
+            # Parse the transaction to verify amount and recipient
+            # The transaction meta contains pre/post token balances
+            meta = resp.value.transaction.meta
+            if meta is None:
+                logger.warning("[VERIFY] Transaction has no meta — cannot verify amount")
+                return False
+
+            # Check pre/post token balances for USDC transfer verification
+            pre_balances = meta.pre_token_balances or []
+            post_balances = meta.post_token_balances or []
+
+            expected_lamports = round(expected_amount * 1_000_000)
+            usdc_mint_str = str(self._usdc_mint)
+
+            # Find USDC balance changes for the expected recipient
+            for post_bal in post_balances:
+                if str(post_bal.mint) != usdc_mint_str:
+                    continue
+                if expected_address and str(post_bal.owner) != expected_address:
+                    continue
+
+                # Find matching pre-balance
+                pre_amount = 0
+                for pre_bal in pre_balances:
+                    if pre_bal.account_index == post_bal.account_index:
+                        pre_amount = int(pre_bal.ui_token_amount.amount)
+                        break
+
+                post_amount = int(post_bal.ui_token_amount.amount)
+                transfer_amount = post_amount - pre_amount
+
+                if transfer_amount >= expected_lamports:
+                    # P0-1.1: Verify sender if expected_sender is provided
+                    if expected_sender:
+                        sender_verified = self._verify_sender(
+                            pre_balances, post_balances, usdc_mint_str, expected_sender
+                        )
+                        if not sender_verified:
+                            logger.warning(
+                                "[VERIFY] Sender mismatch — expected %s but tx %s was not sent by them",
+                                expected_sender[:20], tx_hash[:16],
+                            )
+                            return False
+                    return True
+
+            logger.warning(
+                "[VERIFY] Transaction %s does not match expected amount %.6f to %s",
+                tx_hash[:16], expected_amount, expected_address[:20],
+            )
+            return False
+
+        except asyncio.TimeoutError:
+            logger.error("[VERIFY] Timed out verifying tx %s", tx_hash[:16])
+            return False
+        except Exception as exc:
+            logger.error("[VERIFY] Verification failed for %s: %s", tx_hash[:16], exc)
+            return False
+
+    @staticmethod
+    def _verify_sender(
+        pre_balances: list,
+        post_balances: list,
+        usdc_mint_str: str,
+        expected_sender: str,
+    ) -> bool:
+        """Check that the expected sender's balance decreased (proving they sent the funds)."""
+        for pre_bal in pre_balances:
+            if str(pre_bal.mint) != usdc_mint_str:
+                continue
+            if str(pre_bal.owner) != expected_sender:
+                continue
+            # Found the sender's pre-balance — check that it decreased
+            for post_bal in post_balances:
+                if post_bal.account_index == pre_bal.account_index:
+                    pre_amt = int(pre_bal.ui_token_amount.amount)
+                    post_amt = int(post_bal.ui_token_amount.amount)
+                    if post_amt < pre_amt:
+                        return True
+            # Sender found but balance didn't decrease
+            return False
+        # Sender not found in pre_token_balances at all
+        return False
+
+    def get_address(self) -> str:
+        """Return this wallet's public key as a base58 string."""
+        return str(self._keypair.pubkey())
+
+    def close(self) -> None:
+        """Clear the private key from memory and release the RPC client."""
+        import gc
+
+        self._keypair = None  # type: ignore[assignment]
+        # Detach the RPC client reference; the underlying httpx session
+        # will be cleaned up by GC or the event loop shutdown.
+        self._client = None  # type: ignore[assignment]
+        gc.collect()
+
+class MockSolanaAdapter(BasePaymentProvider):
+    """In-memory mock that simulates Solana payments without touching any chain.
+
+    Used when ``X402_MODE=test``.
+    """
+
+    def __init__(self, balance: float = 100.0, address: str = "MockWa11etAddress1111111111111111111111111111") -> None:
+        self._balance = balance
+        self._address = address
+        self._payments: list[PaymentResult] = []
+
+    async def pay(
+        self, to_address: str, amount: float, token: str = "USDC"
+    ) -> PaymentResult:
+        tx_hash = f"mock_tx_{uuid.uuid4().hex}"
+        result = PaymentResult(tx_hash=tx_hash, success=True, chain="solana-mock", memo="Ag402-v1")
+        self._payments.append(result)
+        self._balance -= amount
+        return result
+
+    async def check_balance(self) -> float:
+        return self._balance
+
+    async def verify_payment(
+        self,
+        tx_hash: str,
+        expected_amount: float = 0,
+        expected_address: str = "",
+        expected_sender: str = "",
+    ) -> bool:
+        """Mock verification — checks tx_hash format and matches known payments."""
+        if not tx_hash or len(tx_hash) < 8:
+            return False
+        # In test mode, check if we issued this tx_hash
+        return any(p.tx_hash == tx_hash for p in self._payments) or tx_hash.startswith("mock_tx_")
+
+    def get_address(self) -> str:
+        return self._address
