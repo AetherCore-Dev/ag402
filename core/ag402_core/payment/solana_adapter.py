@@ -127,6 +127,7 @@ class SolanaAdapter(BasePaymentProvider):
             lamport_amount = round(amount * 1_000_000)
 
             instructions = []
+            needs_ata_creation = False
 
             # 7.2: ATA auto-creation — check if recipient ATA exists
             # Always use "confirmed" commitment for ATA check to avoid
@@ -148,6 +149,7 @@ class SolanaAdapter(BasePaymentProvider):
                         mint=self._usdc_mint,
                     )
                     instructions.append(create_ata_ix)
+                    needs_ata_creation = True
                     logger.info("[ATA] Creating recipient ATA for %s", to_address[:16])
             except asyncio.TimeoutError:
                 logger.warning("[ATA] Timed out checking ATA for %s", to_address[:16])
@@ -228,10 +230,15 @@ class SolanaAdapter(BasePaymentProvider):
             # Always use "confirmed" for preflight simulation to avoid
             # AccountNotFound errors on test-validator where finalized
             # bank lags behind confirmed bank.
+            #
+            # When ATA creation is included, skip preflight entirely:
+            # the RPC preflight simulator cannot reliably handle
+            # "create-then-use" in a single atomic transaction, causing
+            # spurious InvalidAccountData errors — especially on devnet.
             from solana.rpc.types import TxOpts  # type: ignore[import-untyped]
 
             opts = TxOpts(
-                skip_preflight=False,
+                skip_preflight=needs_ata_creation,
                 preflight_commitment="confirmed",
             )
 
@@ -269,12 +276,32 @@ class SolanaAdapter(BasePaymentProvider):
             confirm_wait = min(self._confirm_timeout, 15)
             confirmation_status = "sent"  # default: sent but not yet confirmed
             try:
-                await asyncio.wait_for(
+                confirm_resp = await asyncio.wait_for(
                     self._client.confirm_transaction(
                         resp.value, commitment=self._confirmation_level
                     ),
                     timeout=confirm_wait,
                 )
+                # When skip_preflight was used, the transaction may have been
+                # accepted by the cluster but failed during execution (e.g.
+                # insufficient balance, invalid account data).  Check the
+                # confirmation response for an error field.
+                tx_err = getattr(
+                    getattr(confirm_resp, "value", None), "err", None
+                )
+                if tx_err is not None:
+                    logger.error(
+                        "[CONFIRM] Transaction %s failed on-chain: %s",
+                        tx_hash[:16], tx_err,
+                    )
+                    return PaymentResult(
+                        tx_hash=tx_hash,
+                        success=False,
+                        error=f"Transaction failed on-chain: {tx_err}",
+                        chain="solana",
+                        confirmation_status="failed",
+                    )
+
                 confirmation_status = self._confirmation_level
                 logger.info("[CONFIRM] Transaction %s at %s",
                             tx_hash[:16], self._confirmation_level)

@@ -6,7 +6,7 @@
   </p>
   <p align="center">
     <a href="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml"><img src="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <img src="https://img.shields.io/badge/tests-430_passing-brightgreen" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-500%2B_passing-brightgreen" alt="Tests" />
     <img src="https://img.shields.io/badge/coverage-90%25-brightgreen" alt="Coverage" />
     <img src="https://img.shields.io/pypi/v/ag402-core" alt="PyPI" />
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python" />
@@ -51,6 +51,31 @@ ag402 pay http://127.0.0.1:4020/
 
 `ag402 pay` shows each step: Send request → Receive 402 → Parse payment challenge → On-chain transfer → Retry with proof → Get 200 data.
 
+### 🧪 Local Solana Validator (No Network Required)
+
+Run real on-chain transactions locally — zero network dependency, 100% stability:
+
+```bash
+# Install Solana CLI (one-time)
+sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+
+# Terminal 1: Start local validator
+solana-test-validator --reset
+
+# Terminal 2: Run on-chain demo
+ag402 demo --localnet
+```
+
+See the [Local Validator Guide](docs/guide-localnet.md) for full details.
+
+### 🎯 Demo Modes
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| Mock (default) | `ag402 demo` | Simulated payments, zero risk |
+| Localnet | `ag402 demo --localnet` | Real on-chain via local validator |
+| Devnet | `ag402 demo --devnet` | Real on-chain via Solana devnet |
+
 ---
 
 ## 🔌 Minimal Integration — Two Lines, Zero Intrusion
@@ -94,6 +119,8 @@ ag402 install cursor            # Auto-writes .cursor/mcp.json
 ```
 
 That's it — restart your AI tool and Ag402 tools will appear automatically.
+
+> **📖 Detailed tutorials**: [Claude Code Guide](docs/guide-claude-code.md) · [Cursor Guide](docs/guide-cursor.md) · [OpenClaw Guide](docs/guide-openclaw.md)
 
 <details>
 <summary>Manual configuration (if you prefer)</summary>
@@ -241,7 +268,9 @@ Four composable layers — each can be used independently:
 
 ```bash
 ag402 setup              # Interactive setup wizard (recommended for first use)
-ag402 demo               # Run the full payment demo
+ag402 demo               # Run the full payment demo (mock mode)
+ag402 demo --localnet    # Run demo on local Solana validator
+ag402 demo --devnet      # Run demo on Solana devnet
 ```
 
 ### 🔌 Agent Integration
@@ -258,6 +287,7 @@ ag402 mcp-config         # Generate MCP configs for AI tools
 
 ```bash
 ag402 serve              # Start payment gateway (auto-starts built-in demo backend)
+ag402 serve --localnet   # Start gateway using local Solana validator
 ag402 pay <url>          # Buyer view: 6-step x402 negotiation visualization
 ```
 
@@ -297,6 +327,7 @@ All settings are managed via environment variables or the `~/.ag402/.env` file (
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `X402_MODE` | `test` | `test` = virtual funds, `production` = real on-chain payments |
+| `X402_NETWORK` | `mock` | Network mode: `mock`, `localnet`, `devnet`, `mainnet` |
 | `SOLANA_PRIVATE_KEY` | — | Solana wallet private key (base58), required for production |
 | `SOLANA_RPC_URL` | `devnet` | Solana RPC endpoint |
 | `X402_SINGLE_TX_LIMIT` | `5.0` | Per-transaction cap (USD) |
@@ -347,11 +378,17 @@ docker run -e AG402_UNLOCK_PASSWORD=my_password ...
 > ```
 
 ```bash
-make install     # Install all packages (dev mode)
-make test        # Run all 430 tests
-make lint        # Ruff code checks
-make coverage    # Coverage report
+make install        # Install all packages (dev mode)
+make test           # Run all unit/mock tests (fast, no network)
+make test-localnet  # Run localnet integration tests (requires solana-test-validator)
+make test-devnet    # Run devnet integration tests (requires funded keypair)
+make test-full      # Run all tests: unit + localnet + devnet
+make test-perf      # Run devnet tests with performance regression comparison
+make lint           # Ruff code checks
+make coverage       # Coverage report
 ```
+
+### Unit & Mock Tests
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -368,7 +405,24 @@ make coverage    # Coverage report
 | Integration (phase4 + decimal + verifier) | 31 | 92% |
 | Gateway adapter (MCP) | 5 | -- |
 | MCP Client adapter (buyer) | 39 | 95% |
-| **Total** | **430** | **90%+** |
+| Solana resilience (network errors, retries, timeouts) | 28 | -- |
+| **Subtotal** | **430+** | **90%+** |
+
+### On-chain Integration Tests
+
+| Test Suite | Tests | Environment | CI |
+|------------|-------|-------------|-----|
+| Localnet (solana-test-validator) | 23 | Local chain | ✅ Every PR |
+| Devnet (Solana public testnet) | 26 | devnet RPC | ✅ Nightly |
+| **Subtotal** | **49** | | |
+
+> **Total: 77 on-chain + 430+ unit = 500+ tests**
+
+### Test Infrastructure
+
+- **CI**: GitHub Actions runs unit tests on every PR (Python 3.10/3.11/3.12), localnet integration on every PR, devnet integration nightly
+- **Flaky test handling**: Network-sensitive devnet tests use `@pytest.mark.flaky(reruns=2)` via `pytest-rerunfailures`
+- **Performance baseline**: `conftest_perf.py` plugin records test durations to `.perf-baseline.json`; use `--perf-compare` to detect latency regressions
 
 ---
 
@@ -379,7 +433,7 @@ make coverage    # Coverage report
 3. Run `make lint && make test` to ensure all checks pass
 4. Submit a Pull Request
 
-All PRs go through CI (lint + tests on Python 3.10/3.11/3.12 + build).
+All PRs go through CI (lint + unit tests on Python 3.10/3.11/3.12 + localnet integration + build).
 
 ---
 

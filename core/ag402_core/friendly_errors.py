@@ -45,11 +45,27 @@ def _match_error(exc: BaseException) -> tuple[str, str] | None:
         if "solana" in exc_str or "rpc" in exc_str:
             return (
                 "Cannot connect to Solana network",
-                "Check your network connection, or run `ag402 doctor` to diagnose",
+                "Check your network connection. For local testing, use `ag402 demo --localnet`",
+            )
+        if "8899" in exc_str:
+            return (
+                "Cannot connect to local Solana validator",
+                "Start the validator with `solana-test-validator --reset`",
             )
         return (
             "Network connection failed",
             "Check your network connection, or run `ag402 doctor` to diagnose",
+        )
+
+    if isinstance(exc, TimeoutError) or "timeout" in exc_str or "timed out" in exc_str:
+        if "solana" in exc_str or "rpc" in exc_str or "devnet" in exc_str:
+            return (
+                "Solana RPC timed out (network may be congested)",
+                "Try `ag402 demo --localnet` for stable local testing, or retry later",
+            )
+        return (
+            "Operation timed out",
+            "Check your network or try again. For local testing: `ag402 demo --localnet`",
         )
 
     if isinstance(exc, PermissionError):

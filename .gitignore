@@ -27,6 +27,7 @@ env/
 htmlcov/
 .tox/
 test-ledger/
+.perf-baseline.json
 
 # Environment & secrets
 .env

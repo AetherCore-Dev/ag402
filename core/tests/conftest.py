@@ -20,7 +20,9 @@ _argv = " ".join(sys.argv)
 _LOCALNET_REQUESTED = "localnet" in _argv
 _DEVNET_REQUESTED = "devnet" in _argv
 
-pytest_plugins: list[str] = []
+pytest_plugins: list[str] = [
+    "tests.conftest_perf",  # Performance baseline tracking
+]
 
 if _LOCALNET_REQUESTED and not _DEVNET_REQUESTED:
     try:

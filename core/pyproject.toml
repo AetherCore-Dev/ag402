@@ -32,6 +32,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "pytest-timeout>=2.2.0",
+    "pytest-rerunfailures>=14.0",
     "ruff>=0.3.0",
     "httpx>=0.27.0",
 ]
@@ -48,5 +49,6 @@ asyncio_mode = "auto"
 markers = [
     "devnet: marks tests that require Solana devnet access (deselect with '-m \"not devnet\"')",
     "localnet: marks tests that require solana-test-validator (deselect with '-m \"not localnet\"')",
+    "flaky: marks tests known to be flaky due to network conditions",
 ]
 timeout = 120

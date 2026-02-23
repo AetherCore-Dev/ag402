@@ -71,6 +71,7 @@ class TestGatewayChallenge:
 class TestGatewayVerification:
     """Test PaymentVerifier with real SolanaAdapter on devnet."""
 
+    @pytest.mark.flaky(reruns=2, reruns_delay=5)
     @with_timeout()
     async def test_verifier_accepts_real_payment(
         self,

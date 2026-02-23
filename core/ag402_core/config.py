@@ -18,6 +18,15 @@ class RunMode(Enum):
     TEST = "test"
 
 
+class NetworkMode(Enum):
+    """Network mode for Solana connectivity."""
+
+    MOCK = "mock"
+    LOCALNET = "localnet"
+    DEVNET = "devnet"
+    MAINNET = "mainnet"
+
+
 # --- Safety constants ---
 # Hardcoded upper bounds that cannot be exceeded even via environment variables.
 MAX_DAILY_SPEND_HARD_CEILING: float = 1000.0  # USD — absolute maximum for daily limit
@@ -71,6 +80,9 @@ class X402Config:
 
     # --- Core ---
     mode: RunMode = field(default_factory=lambda: RunMode(os.getenv("X402_MODE", "test")))
+    network: NetworkMode = field(
+        default_factory=lambda: NetworkMode(os.getenv("X402_NETWORK", "mock"))
+    )
     protocol_version: str = "v1.0"
 
     # --- Wallet ---
@@ -166,6 +178,19 @@ class X402Config:
     @property
     def is_test_mode(self) -> bool:
         return self.mode == RunMode.TEST
+
+    @property
+    def is_localnet(self) -> bool:
+        return self.network == NetworkMode.LOCALNET
+
+    @property
+    def effective_rpc_url(self) -> str:
+        """RPC URL based on network mode (localnet overrides solana_rpc_url)."""
+        if self.network == NetworkMode.LOCALNET:
+            return "http://127.0.0.1:8899"
+        if self.network == NetworkMode.MAINNET:
+            return self.solana_rpc_url or "https://api.mainnet-beta.solana.com"
+        return self.solana_rpc_url
 
     @property
     def daily_spend_limit(self) -> float:

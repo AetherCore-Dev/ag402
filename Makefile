@@ -1,7 +1,10 @@
-.PHONY: install test lint build clean coverage
+.PHONY: install install-crypto test lint build clean coverage test-devnet test-localnet test-full test-perf
 
 install:
 	pip install -e protocol/ -e "core/[dev]" -e "adapters/mcp/[dev]" -e "adapters/client_mcp/[dev]"
+
+install-crypto:
+	pip install -e "core/[crypto,dev]"
 
 test:
 	cd protocol && pytest tests/ -v -m "not devnet"
@@ -10,10 +13,16 @@ test:
 	cd adapters/client_mcp && pytest tests/ -v
 
 test-devnet:
-	cd core && pytest tests/test_devnet_solana.py tests/test_devnet_e2e.py -v -s --timeout=180
+	cd core && pytest tests/ -m devnet -v -s --timeout=180
 
 test-localnet:
-	cd core && pytest tests/test_localnet_solana.py tests/test_localnet_e2e.py -v -s --timeout=60
+	cd core && pytest tests/ -m localnet -v -s --timeout=120
+
+test-full:
+	./scripts/run-full-test.sh
+
+test-perf:
+	cd core && pytest tests/ -m devnet -v -s --timeout=180 --perf-compare
 
 lint:
 	ruff check protocol/ core/ adapters/ examples/

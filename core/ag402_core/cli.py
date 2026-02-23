@@ -141,6 +141,8 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--port", type=int, default=4020, help="Gateway port")
     serve_p.add_argument("--price", default="0.02", help="Price per API call (USDC)")
     serve_p.add_argument("--address", default="", help="Receiving wallet address")
+    serve_p.add_argument("--localnet", action="store_true",
+                         help="Use local Solana validator (http://127.0.0.1:8899)")
 
     # --- upgrade (NEW — test → production migration) ---
     sub.add_parser("upgrade", help="Upgrade from test mode to production")
@@ -182,7 +184,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Run environment health checks")
 
     # --- demo ---
-    sub.add_parser("demo", help="Run E2E payment demo (test mode, zero config)")
+    demo_p = sub.add_parser("demo", help="Run E2E payment demo (test mode, zero config)")
+    demo_p.add_argument(
+        "--mode", choices=["mock", "localnet", "devnet"], default="mock",
+        help="Demo mode: mock (default), localnet (solana-test-validator), devnet",
+    )
+    demo_p.add_argument("--localnet", action="store_true", help="Shortcut for --mode localnet")
+    demo_p.add_argument("--devnet", action="store_true", help="Shortcut for --mode devnet")
 
     # --- pay (NEW — single request with auto-payment) ---
     pay_p = sub.add_parser("pay", help="Send a single request with auto-payment")
@@ -240,7 +248,7 @@ def main() -> None:
             "config": _cmd_config,
             "info": _cmd_info,
             "doctor": _cmd_doctor,
-            "demo": lambda: asyncio.run(_cmd_demo()),
+            "demo": lambda: asyncio.run(_cmd_demo(_resolve_demo_mode(args))),
             "pay": lambda: asyncio.run(_cmd_pay(args.url, args.method, args.db)),
             "export": lambda: asyncio.run(_cmd_export(args.db, args.format, args.output)),
         }
@@ -276,7 +284,9 @@ def _cmd_help() -> None:
     print()
     print(f"  {_bold('Quick Start')}")
     print(f"    {'setup':<24s} Interactive setup wizard (recommended for first use)")
-    print(f"    {'demo':<24s} Run a full payment demo")
+    print(f"    {'demo':<24s} Run a full payment demo (mock mode)")
+    print(f"    {'demo --localnet':<24s} Demo with local Solana validator")
+    print(f"    {'demo --devnet':<24s} Demo with Solana devnet")
     print(f"    {'pay <url>':<24s} Send a single request with auto-payment")
     print()
     print(f"  {_bold('Agent Integration')}")
@@ -305,6 +315,7 @@ def _cmd_help() -> None:
     print()
     print(f"  {_bold('Examples')}")
     print(f"    $ {_cyan('ag402 setup')}")
+    print(f"    $ {_cyan('ag402 demo --localnet')}")
     print(f"    $ {_cyan('ag402 install cursor')}")
     print(f"    $ {_cyan('ag402 run -- python my_agent.py')}")
     print(f"    $ {_cyan('ag402 pay http://127.0.0.1:4020/')}")
@@ -559,6 +570,15 @@ def _cmd_serve(args) -> None:
     port = args.port
     price = args.price
     address = args.address
+    use_localnet = getattr(args, "localnet", False)
+
+    if use_localnet:
+        if not _check_localnet_ready():
+            print(f"\n  {_red('✗')} Local Solana validator not running on port 8899")
+            print(f"  → Run: {_cyan('solana-test-validator --reset')}")
+            print()
+            return
+        print(f"\n  {_cyan('ℹ')} Localnet mode: using solana-test-validator at http://127.0.0.1:8899\n")
 
     if not target:
         # Try to load from .env
@@ -1185,6 +1205,29 @@ def _cmd_doctor() -> None:
             print(f"  {_red('✗')}  Solana dependencies: NOT installed (required for production)")
             issues.append("Solana deps required for production: pip install 'ag402-core[crypto]'")
 
+    # Solana CLI tools
+    import shutil as _doc_shutil
+    solana_cli = _doc_shutil.which("solana")
+    if solana_cli:
+        print(f"  {_green('✓')}  Solana CLI: {solana_cli}")
+    else:
+        print(f"  {_yellow('⚠')}  Solana CLI: not found (optional, needed for localnet)")
+        warnings.append("Solana CLI not installed (optional)")
+
+    test_validator = _doc_shutil.which("solana-test-validator")
+    if test_validator:
+        print(f"  {_green('✓')}  solana-test-validator: {test_validator}")
+    else:
+        print(f"  {_yellow('⚠')}  solana-test-validator: not found (optional, needed for localnet)")
+        warnings.append("solana-test-validator not installed (optional)")
+
+    # Check if localnet validator is running
+    if test_validator or _check_localnet_ready():
+        if _check_localnet_ready():
+            print(f"  {_green('✓')}  Local validator: running on port 8899")
+        else:
+            print(f"  {_dim('·')}  Local validator: not running (start with: solana-test-validator --reset)")
+
     print()
 
     # Wallet DB
@@ -1413,8 +1456,25 @@ async def _cmd_pay(url: str, method: str, db_path: str) -> None:
         except httpx.ConnectError:
             print(f"\n     {_red('✗')} Cannot connect to {url}")
             print(f"     {_dim('Make sure the target service is running')}")
+            print(f"     {_dim('Tip: Start a demo gateway with')} {_cyan('ag402 serve')}")
+        except httpx.TimeoutException:
+            print(f"\n     {_red('✗')} Request timed out for {url}")
+            print(f"     {_dim('The server did not respond within 30 seconds')}")
+            print(f"     {_dim('If using devnet, try localnet:')} {_cyan('ag402 demo --localnet')}")
         except Exception as exc:
-            print(f"\n  {_red('✗')} Request failed: {exc}")
+            exc_str = str(exc).lower()
+            if "rpc" in exc_str or "solana" in exc_str:
+                print(f"\n  {_red('✗')} Solana RPC error: {exc}")
+                print(f"  {_yellow('⚠')} Suggestions:")
+                print("     1. Check your network connection")
+                print(f"     2. Use localnet: {_cyan('ag402 demo --localnet')}")
+                print(f"     3. Check RPC URL: {_cyan('ag402 config')}")
+            elif "timeout" in exc_str or "timed out" in exc_str:
+                print(f"\n  {_red('✗')} Operation timed out: {exc}")
+                print(f"  {_yellow('⚠')} The transaction may still succeed on-chain")
+                print(f"     Check with: {_cyan('ag402 history')}")
+            else:
+                print(f"\n  {_red('✗')} Request failed: {exc}")
         finally:
             await wallet.close()
 
@@ -1458,11 +1518,111 @@ def _print_response_body(body: bytes, status_code: int) -> None:
         print(f"       {_dim(f'... {total - show} more lines omitted')}")
 
 
-async def _cmd_demo() -> None:
+# ─── Demo mode helpers ────────────────────────────────────────────────────
+
+
+def _resolve_demo_mode(args) -> str:
+    """Resolve the demo mode from CLI args (shortcut flags take priority)."""
+    if getattr(args, "localnet", False):
+        return "localnet"
+    if getattr(args, "devnet", False):
+        return "devnet"
+    return getattr(args, "mode", "mock")
+
+
+def _check_localnet_ready() -> bool:
+    """Check if solana-test-validator is running on port 8899."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1.0)
+        return s.connect_ex(("127.0.0.1", 8899)) == 0
+
+
+def _check_devnet_ready() -> bool:
+    """Check if Solana devnet RPC is reachable."""
+    try:
+        import httpx
+        resp = httpx.post(
+            "https://api.devnet.solana.com",
+            json={"jsonrpc": "2.0", "id": 1, "method": "getHealth"},
+            timeout=5.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def _setup_localnet_accounts():
+    """Set up localnet accounts: airdrop SOL, create USDC mint, mint tokens.
+
+    Returns (buyer_private_key_b58, seller_pubkey, test_usdc_mint_str, rpc_url).
+    """
+    import base58 as b58
+    from solana.rpc.api import Client as SyncClient
+    from solders.keypair import Keypair
+    from spl.token.client import Token as SyncToken
+    from spl.token.constants import TOKEN_PROGRAM_ID
+    from spl.token.instructions import get_associated_token_address
+
+    rpc_url = "http://127.0.0.1:8899"
+    client = SyncClient(rpc_url, timeout=30, commitment="confirmed")
+
+    buyer_kp = Keypair()
+    seller_kp = Keypair()
+
+    print(f"     Buyer:  {str(buyer_kp.pubkey())[:20]}...")
+    print(f"     Seller: {str(seller_kp.pubkey())[:20]}...")
+
+    # Airdrop SOL
+    print("     Airdropping SOL ... ", end="", flush=True)
+    client.request_airdrop(buyer_kp.pubkey(), int(100 * 1e9))
+    client.request_airdrop(seller_kp.pubkey(), int(10 * 1e9))
+    # Wait for balance
+    for _ in range(60):
+        time.sleep(0.5)
+        bal = client.get_balance(buyer_kp.pubkey(), commitment="confirmed")
+        if bal.value > 0:
+            break
+    print(_green("✓"))
+
+    # Create USDC-like mint
+    print("     Creating test USDC mint ... ", end="", flush=True)
+    token = SyncToken.create_mint(
+        conn=client, payer=buyer_kp,
+        mint_authority=buyer_kp.pubkey(), decimals=6,
+        program_id=TOKEN_PROGRAM_ID,
+    )
+    mint_pubkey = token.pubkey
+    print(_green("✓"))
+
+    # Create buyer ATA and mint tokens
+    print("     Minting 1000 USDC to buyer ... ", end="", flush=True)
+    tc = SyncToken(conn=client, pubkey=mint_pubkey, program_id=TOKEN_PROGRAM_ID, payer=buyer_kp)
+    buyer_ata = get_associated_token_address(buyer_kp.pubkey(), mint_pubkey)
+    try:
+        info = client.get_account_info(buyer_ata, commitment="confirmed")
+        if info.value is None:
+            tc.create_associated_token_account(buyer_kp.pubkey())
+    except Exception:
+        tc.create_associated_token_account(buyer_kp.pubkey())
+    tc.mint_to(dest=buyer_ata, mint_authority=buyer_kp, amount=int(1000 * 1_000_000))
+    time.sleep(1)
+    print(_green("✓"))
+
+    buyer_b58 = b58.b58encode(bytes(buyer_kp)).decode()
+    return buyer_b58, str(seller_kp.pubkey()), str(mint_pubkey), rpc_url
+
+
+async def _cmd_demo(mode: str = "mock") -> None:
     """Run a self-contained E2E payment demo.
 
     Uses the persistent wallet (~/.ag402/wallet.db) so demo transactions
     show up in `ag402 status` and `ag402 history`.
+
+    Modes:
+      - mock: Simulated payments (default, zero risk)
+      - localnet: Real on-chain via solana-test-validator
+      - devnet: Real on-chain via Solana devnet
     """
     from ag402_core.config import RunMode, X402Config
     from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
@@ -1470,9 +1630,44 @@ async def _cmd_demo() -> None:
     from ag402_core.wallet.agent_wallet import AgentWallet
 
     _print_banner()
+
+    mode_labels = {
+        "mock": _yellow("MOCK") + " (simulated, zero risk)",
+        "localnet": _cyan("LOCALNET") + " (solana-test-validator, real on-chain)",
+        "devnet": _green("DEVNET") + " (Solana devnet, real on-chain)",
+    }
+
     print(f"  {_bold('E2E Payment Demo')} — Full AI Agent auto-payment flow")
     print("  " + "═" * 55)
+    print(f"  Mode: {mode_labels.get(mode, mode)}")
     print()
+
+    # ── Pre-flight checks for non-mock modes ──
+    if mode == "localnet" and not _check_localnet_ready():
+        print(f"  {_red('✗')} Local Solana validator not running on port 8899")
+        print()
+        print(f"  {_bold('To start it:')}")
+        print(f"    $ {_cyan('solana-test-validator --reset')}")
+        print()
+        print(f"  {_dim('Or use mock mode:')} {_cyan('ag402 demo')}")
+        print()
+        return
+
+    if mode == "devnet":
+        print(f"  {_dim('Checking Solana devnet connectivity ...')} ", end="", flush=True)
+        if not _check_devnet_ready():
+            print(_red("✗"))
+            print()
+            print(f"  {_yellow('⚠')} Solana devnet is unreachable or unstable")
+            print()
+            print(f"  {_bold('Suggestions:')}")
+            print("    1. Check your network connection")
+            print(f"    2. Use localnet instead: {_cyan('ag402 demo --localnet')}")
+            print(f"    3. Use mock mode: {_cyan('ag402 demo')}")
+            print()
+            return
+        print(_green("✓"))
+        print()
 
     # Check if gateway dependencies are available
     try:
@@ -1496,10 +1691,67 @@ async def _cmd_demo() -> None:
         balance = float(await wallet.get_balance())
     print(_green("✓"))
     print(f"     Balance: {_green(f'${balance:.2f}')}")
-    print("     Mode: Mock Solana (test environment, zero risk)")
+
+    # ── Select provider based on mode ──
+    if mode == "localnet":
+        print("     Setting up localnet accounts ...")
+        try:
+            buyer_key, seller_addr, usdc_mint, rpc_url = await _setup_localnet_accounts()
+        except ImportError:
+            print(f"     {_red('✗')} Solana dependencies not installed")
+            install_hint = "pip install 'ag402-core[crypto]'"
+            print(f"     → Run: {_cyan(install_hint)}")
+            await wallet.close()
+            print()
+            return
+        except Exception as exc:
+            print(f"     {_red('✗')} Localnet setup failed: {exc}")
+            print(f"     → Make sure {_cyan('solana-test-validator')} is running")
+            await wallet.close()
+            print()
+            return
+
+        from ag402_core.payment.solana_adapter import SolanaAdapter
+        provider = SolanaAdapter(
+            private_key=buyer_key, rpc_url=rpc_url,
+            usdc_mint=usdc_mint,
+        )
+        print(f"     Mode: {_cyan('Localnet')} (real on-chain via solana-test-validator)")
+        recipient_addr = seller_addr
+
+    elif mode == "devnet":
+        from ag402_core.config import load_config
+        config = load_config()
+        if not config.solana_private_key:
+            print(f"     {_yellow('⚠')} No SOLANA_PRIVATE_KEY set — falling back to mock mode")
+            print("     → Set SOLANA_PRIVATE_KEY for real devnet transactions")
+            mode = "mock"
+            provider = MockSolanaAdapter(balance=balance)
+            recipient_addr = "DemoRecipientWa11et11111111111111111111"
+            print("     Mode: Mock Solana (test environment, zero risk)")
+        else:
+            try:
+                from ag402_core.payment.solana_adapter import SolanaAdapter
+                provider = SolanaAdapter(
+                    private_key=config.solana_private_key,
+                    rpc_url=config.solana_rpc_url,
+                    usdc_mint=config.usdc_mint_address,
+                )
+                recipient_addr = "DemoRecipientWa11et11111111111111111111"
+                print(f"     Mode: {_green('Devnet')} (real on-chain)")
+            except Exception as exc:
+                print(f"     {_yellow('⚠')} Devnet adapter init failed: {exc}")
+                print("     → Falling back to mock mode")
+                mode = "mock"
+                provider = MockSolanaAdapter(balance=balance)
+                recipient_addr = "DemoRecipientWa11et11111111111111111111"
+    else:
+        provider = MockSolanaAdapter(balance=balance)
+        recipient_addr = "DemoRecipientWa11et11111111111111111111"
+        print("     Mode: Mock Solana (test environment, zero risk)")
+
     print()
 
-    provider = MockSolanaAdapter(balance=balance)
     config = X402Config(mode=RunMode.TEST, single_tx_limit=1.0)
     middleware = X402PaymentMiddleware(wallet=wallet, provider=provider, config=config)
 
@@ -1546,10 +1798,9 @@ async def _cmd_demo() -> None:
             # Start gateway
             print(f"     Starting x402 Gateway (:{gateway_port}) ... ", end="", flush=True)
             verifier = PaymentVerifier()
-            recipient = "DemoRecipientWa11et11111111111111111111"
             gateway = X402Gateway(
                 target_url=f"http://127.0.0.1:{weather_port}",
-                price="0.02", chain="solana", token="USDC", address=recipient,
+                price="0.02", chain="solana", token="USDC", address=recipient_addr,
                 verifier=verifier,
             )
             gateway_app = gateway.create_app()
@@ -1574,7 +1825,28 @@ async def _cmd_demo() -> None:
             print()
 
             t0 = time.monotonic()
-            result = await middleware.handle_request("GET", url)
+            try:
+                result = await middleware.handle_request("GET", url)
+            except Exception as pay_exc:
+                elapsed = time.monotonic() - t0
+                print(f"  {_bold('④ Payment Failed')} ({elapsed:.2f}s)")
+                print(f"     {_red('✗')} {pay_exc}")
+                if mode == "devnet":
+                    print()
+                    print(f"  {_yellow('⚠')} Devnet payment failed. Possible causes:")
+                    print("     • Network instability or RPC timeout")
+                    print("     • Insufficient devnet USDC balance")
+                    print()
+                    print(f"  {_bold('Suggestions:')}")
+                    print(f"    1. Retry: {_cyan('ag402 demo --devnet')}")
+                    print(f"    2. Use localnet: {_cyan('ag402 demo --localnet')}")
+                    print(f"    3. Use mock: {_cyan('ag402 demo')}")
+                elif mode == "localnet":
+                    print()
+                    print(f"  {_yellow('⚠')} Localnet payment failed.")
+                    print(f"     → Make sure {_cyan('solana-test-validator')} is still running")
+                raise
+
             elapsed = time.monotonic() - t0
 
             print(f"  {_bold('④ Payment Negotiation')}")
@@ -1582,6 +1854,8 @@ async def _cmd_demo() -> None:
                 print(f"     Server returned {_yellow('402')} → Ag402 auto-paid {_green('✓')}  ({elapsed:.2f}s)")
                 print(f"     TX Hash: {_cyan(result.tx_hash[:44])}...")
                 print(f"     Amount:  {_green(f'${result.amount_paid:.4f} USDC')}")
+                if mode in ("localnet", "devnet"):
+                    print(f"     Chain:   {_bold('Real on-chain')} ({mode})")
             print()
 
             print(f"  {_bold('⑤ Fetch Data')}")
@@ -1610,11 +1884,13 @@ async def _cmd_demo() -> None:
 
             print(f"  {_bold('② Simulated Payment')}")
             print("     Paying $0.02 USDC ... ", end="", flush=True)
-            pay_result = await provider.pay("DemoRecipient1111111111111111111111", 0.02, "USDC")
-            await wallet.deduct(0.02, to_address="DemoRecipient1111111111111111111111", tx_hash=pay_result.tx_hash)
+            pay_result = await provider.pay(recipient_addr, 0.02, "USDC")
+            await wallet.deduct(0.02, to_address=recipient_addr, tx_hash=pay_result.tx_hash)
             print(_green("✓"))
             print(f"     TX Hash: {_cyan(pay_result.tx_hash[:44])}...")
             print(f"     Amount:  {_green('$0.02 USDC')}")
+            if mode in ("localnet", "devnet"):
+                print(f"     Chain:   {_bold('Real on-chain')} ({mode})")
 
             final = float(await wallet.get_balance())
             print(f"     Balance: {_green(f'${final:.2f}')}")
@@ -1647,12 +1923,19 @@ async def _cmd_demo() -> None:
             with contextlib.suppress(Exception):
                 await gateway._persistent_guard.close()
 
+        # Clean up SolanaAdapter if applicable
+        if mode in ("localnet", "devnet") and hasattr(provider, "close"):
+            with contextlib.suppress(Exception):
+                provider.close()
+
         await middleware.close()
         await wallet.close()
 
     print()
     print("  " + "═" * 55)
     print(f"  {_green('✓')} Demo complete! The AI Agent auto-paid for an API call.")
+    if mode in ("localnet", "devnet"):
+        print(f"  {_dim('The transaction is a real on-chain SPL Token transfer.')}")
     print(f"  {_dim('Use')} {_cyan('ag402 history')} {_dim('to view transaction history')}")
     print()
 

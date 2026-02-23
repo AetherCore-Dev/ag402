@@ -75,6 +75,13 @@ def _mock_acct_info(exists: bool = False):
     return mock
 
 
+def _mock_confirm_resp(err=None):
+    """Build a mock confirm_transaction response with optional error."""
+    mock = MagicMock()
+    mock.value.err = err
+    return mock
+
+
 # ===================================================================
 # T1: RPC Timeout on pay() — critical RPC calls hang
 # ===================================================================
@@ -211,7 +218,7 @@ class TestATACheckDegradation:
             return await original_send(*a, **kw)
 
         adapter._client.send_transaction = _track_send
-        adapter._client.confirm_transaction = AsyncMock()
+        adapter._client.confirm_transaction = AsyncMock(return_value=_mock_confirm_resp())
 
         result = await adapter.pay(_SELLER, 0.01)
         assert result.success, f"Payment should proceed: {result.error}"
@@ -228,7 +235,7 @@ class TestATACheckDegradation:
         )
         adapter._client.get_latest_blockhash = AsyncMock(return_value=_mock_blockhash_resp())
         adapter._client.send_transaction = AsyncMock(return_value=_mock_send_resp())
-        adapter._client.confirm_transaction = AsyncMock()
+        adapter._client.confirm_transaction = AsyncMock(return_value=_mock_confirm_resp())
 
         result = await adapter.pay(_SELLER, 0.01)
         assert result.success
@@ -365,7 +372,7 @@ class TestNetworkJitter:
         adapter._client.get_account_info = AsyncMock(return_value=_mock_acct_info(True))
         adapter._client.get_latest_blockhash = _slow_bh
         adapter._client.send_transaction = AsyncMock(return_value=_mock_send_resp())
-        adapter._client.confirm_transaction = AsyncMock()
+        adapter._client.confirm_transaction = AsyncMock(return_value=_mock_confirm_resp())
 
         result = await adapter.pay(_SELLER, 0.01)
         assert result.success
@@ -383,7 +390,7 @@ class TestNetworkJitter:
         adapter._client.get_account_info = AsyncMock(return_value=_mock_acct_info(False))
         adapter._client.get_latest_blockhash = AsyncMock(return_value=_mock_blockhash_resp())
         adapter._client.send_transaction = _slow_send
-        adapter._client.confirm_transaction = AsyncMock()
+        adapter._client.confirm_transaction = AsyncMock(return_value=_mock_confirm_resp())
 
         result = await adapter.pay(_SELLER, 0.01)
         assert result.success
