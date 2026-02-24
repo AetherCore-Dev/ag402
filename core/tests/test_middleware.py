@@ -129,7 +129,7 @@ async def test_payment_failure_triggers_rollback(tmp_path):
 
     # Custom mock that always fails payment
     class FailingProvider(MockSolanaAdapter):
-        async def pay(self, to_address, amount, token="USDC"):
+        async def pay(self, to_address, amount, token="USDC", *, request_id=""):
             return PaymentResult(tx_hash="", success=False, error="Network timeout")
 
     provider = FailingProvider()

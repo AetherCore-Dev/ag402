@@ -4,6 +4,8 @@ Payment verification for the gateway (server side).
 Verifies x402 payment proofs submitted by clients in the Authorization header.
 In test mode (no provider), accepts any well-formatted x402 proof.
 With a provider, verifies the transaction on-chain.
+
+Supports request_id-based idempotency deduplication via PersistentReplayGuard.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from open402.headers import parse_authorization
 
 from ag402_core.config import RunMode, X402Config
 from ag402_core.payment.base import BasePaymentProvider
+from ag402_core.security.replay_guard import PersistentReplayGuard
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +29,23 @@ class VerifyResult:
     valid: bool
     tx_hash: str = ""
     error: str = ""
+    request_id: str = ""
 
 
 class PaymentVerifier:
-    """Verifies x402 payment proofs submitted by clients."""
+    """Verifies x402 payment proofs submitted by clients.
+
+    When a ``replay_guard`` is provided (recommended for production), the
+    verifier automatically deduplicates payment proofs by ``tx_hash``,
+    preventing replay attacks where a client resubmits the same proof
+    multiple times.
+    """
 
     def __init__(
         self,
         provider: BasePaymentProvider | None = None,
         config: X402Config | None = None,
+        replay_guard: PersistentReplayGuard | None = None,
     ):
         """Provider is optional -- if None, only basic format checks are done (test mode).
 
@@ -42,9 +53,12 @@ class PaymentVerifier:
             provider: Payment provider for on-chain verification.
             config: Optional configuration. When provided in production mode,
                     a provider is required.
+            replay_guard: Optional persistent replay guard for tx_hash
+                deduplication.
         """
         self._provider = provider
         self._config = config
+        self._replay_guard = replay_guard
 
         # Production mode safety: require a provider
         if config is not None and config.mode != RunMode.TEST and provider is None:
@@ -113,7 +127,21 @@ class PaymentVerifier:
             )
 
         tx_hash = proof.tx_hash
-        logger.info("[VERIFY] Parsed x402 proof -- tx_hash: %s", tx_hash)
+        request_id = proof.request_id
+        logger.info("[VERIFY] Parsed x402 proof -- tx_hash: %s, request_id: %s",
+                     tx_hash, request_id or "n/a")
+
+        # 1.5. Replay guard: check tx_hash deduplication
+        if self._replay_guard is not None:
+            is_new = await self._replay_guard.check_and_record_tx(tx_hash)
+            if not is_new:
+                logger.warning("[VERIFY] Duplicate tx_hash rejected (replay): %s", tx_hash[:32])
+                return VerifyResult(
+                    valid=False,
+                    tx_hash=tx_hash,
+                    request_id=request_id,
+                    error="Duplicate payment proof (tx_hash already used)",
+                )
 
         # 2. If provider is available, verify on-chain
         if self._provider is not None:
@@ -139,12 +167,13 @@ class PaymentVerifier:
                 return VerifyResult(
                     valid=False,
                     tx_hash=tx_hash,
+                    request_id=request_id,
                     error="Payment not confirmed on-chain",
                 )
 
             logger.info("[VERIFY] On-chain verification succeeded for tx: %s", tx_hash)
-            return VerifyResult(valid=True, tx_hash=tx_hash)
+            return VerifyResult(valid=True, tx_hash=tx_hash, request_id=request_id)
 
         # 3. No provider -- test mode: accept any well-formatted x402 proof
         logger.info("[VERIFY] No provider -- accepting proof in test mode (tx: %s)", tx_hash)
-        return VerifyResult(valid=True, tx_hash=tx_hash)
+        return VerifyResult(valid=True, tx_hash=tx_hash, request_id=request_id)

@@ -80,7 +80,7 @@ async def test_chain_payment_failure_DOES_rollback(tmp_path):
     order_store = await _make_order_store(tmp_path)
 
     class FailingProvider(MockSolanaAdapter):
-        async def pay(self, to_address, amount, token="USDC"):
+        async def pay(self, to_address, amount, token="USDC", *, request_id=""):
             return PaymentResult(tx_hash="", success=False, error="Network timeout")
 
     provider = FailingProvider()

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-02-24
+
+### Added
+
+- **Transaction idempotency (F3)**: `request_id` embedded in Solana memo field (`Ag402-v1|<request_id>`) for payment deduplication — gateway-side `PersistentReplayGuard` rejects duplicate `tx_hash` proofs
+- **Priority fees (F4)**: `computeBudget` + `SetComputeUnitPrice` instructions added to Solana transactions — configurable via `X402_PRIORITY_FEE` and `X402_COMPUTE_UNIT_LIMIT` env vars for reliable confirmation during network congestion
+- **RPC failover for balance/verify (F5)**: `MultiEndpointClient` failover now covers `check_balance()` and `verify_payment()` in addition to `pay()` — full RPC resilience across all Solana operations
+- **Mainnet smoke test (F2)**: `test_mainnet_smoke.py` — self-transfer verification with priority fees, on-chain verification, manual-only execution (`-m mainnet`)
+- **Concurrent payment tests (F1)**: `test_concurrent_payments.py` — 9 tests covering multi-agent nonce conflicts, wallet consistency under concurrent deposits/deductions, budget guard race conditions, replay guard deduplication
+- `request_id` field added to `X402PaymentProof`, `PaymentResult`, and `VerifyResult` — full end-to-end idempotency tracking
+- `PaymentVerifier` now accepts optional `PersistentReplayGuard` for automatic tx_hash deduplication
+- Total test count: **562+ tests** (30 protocol + 488 core + 5 MCP + 39 client MCP), all passing
+
+### Fixed
+
+- Mock provider `pay()` signature updated to accept `request_id` keyword argument — prevents `TypeError` in middleware tests
+
 ## [0.1.5] - 2026-02-24
 
 ### Added
@@ -63,11 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues & Future Work
 
-- **Concurrent payments**: No tests for multiple agents paying simultaneously with same keypair (nonce conflicts)
-- **Mainnet smoke test**: No real mainnet transaction tests yet — devnet/localnet only
-- **Transaction idempotency**: No idempotency key / dedup mechanism — agent retry may cause double-spend
-- **Priority fees**: No `computeBudget` / priority fee support — mainnet congestion may cause pending transactions
-- **RPC failover**: `MultiEndpointClient` exists but not yet integrated into production `SolanaAdapter.pay()` flow
+- ~~**Concurrent payments**: No tests for multiple agents paying simultaneously with same keypair (nonce conflicts)~~ → Fixed in v0.1.6 (F1)
+- ~~**Mainnet smoke test**: No real mainnet transaction tests yet — devnet/localnet only~~ → Fixed in v0.1.6 (F2)
+- ~~**Transaction idempotency**: No idempotency key / dedup mechanism — agent retry may cause double-spend~~ → Fixed in v0.1.6 (F3)
+- ~~**Priority fees**: No `computeBudget` / priority fee support — mainnet congestion may cause pending transactions~~ → Fixed in v0.1.6 (F4)
+- ~~**RPC failover**: `MultiEndpointClient` exists but not yet integrated into production `SolanaAdapter.pay()` flow~~ → Fixed in v0.1.6 (F5)
 - **Token 2022**: Only classic SPL Token program supported; Token Extensions not tested
 - **Dynamic confirm timeout**: Hardcoded `min(timeout, 15s)` — should adapt per network (devnet 30s, mainnet 60s)
 - **Two-phase ATA creation**: Current approach skips preflight for ATA+transfer; ideal would be separate CreateATA tx → wait → TransferChecked tx

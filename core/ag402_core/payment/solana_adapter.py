@@ -43,6 +43,8 @@ class SolanaAdapter(BasePaymentProvider):
         confirmation_level: str = "confirmed",
         rpc_backup_url: str = "",
         max_rpc_retries: int = 2,
+        priority_fee_microlamports: int = 0,
+        compute_unit_limit: int = 0,
     ) -> None:
         # Lazy-import heavy crypto dependencies
         try:
@@ -77,6 +79,10 @@ class SolanaAdapter(BasePaymentProvider):
         self._endpoint_mgr = MultiEndpointClient(rpc_url, backup_urls)
         self._client = AsyncClient(self._endpoint_mgr.current_url, commitment=confirmation_level)
 
+        # Priority fee configuration (0 = disabled)
+        self._priority_fee_microlamports = priority_fee_microlamports
+        self._compute_unit_limit = compute_unit_limit
+
         logger.warning(
             "Private key loaded into memory. Consider using HSM in production."
         )
@@ -90,14 +96,19 @@ class SolanaAdapter(BasePaymentProvider):
     # -- BasePaymentProvider interface --------------------------------------
 
     async def pay(
-        self, to_address: str, amount: float, token: str = "USDC"
+        self, to_address: str, amount: float, token: str = "USDC",
+        *, request_id: str = "",
     ) -> PaymentResult:
         """Execute an SPL Token transfer of USDC on Solana.
 
         Includes:
         - ATA auto-creation for recipient if needed
-        - Memo instruction "Ag402-v1" (best-effort)
+        - Memo instruction "Ag402-v1" or "Ag402-v1|<request_id>" for idempotency
         - Transaction confirmation wait
+
+        Args:
+            request_id: Optional unique identifier embedded in the transaction
+                memo for idempotency deduplication.
 
         Compatible with solana-py >=0.36.0 / solders >=0.21.0.
         """
@@ -128,6 +139,40 @@ class SolanaAdapter(BasePaymentProvider):
 
             instructions = []
             needs_ata_creation = False
+
+            # F4: Priority fee instructions (computeBudget program)
+            # These must come first in the transaction.
+            if self._compute_unit_limit > 0 or self._priority_fee_microlamports > 0:
+                try:
+                    COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string(
+                        "ComputeBudget111111111111111111111111111"
+                    )
+                    import struct
+
+                    if self._compute_unit_limit > 0:
+                        # SetComputeUnitLimit instruction (discriminator = 2)
+                        cu_data = struct.pack("<BI", 2, self._compute_unit_limit)
+                        instructions.append(Instruction(
+                            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+                            data=cu_data,
+                            accounts=[],
+                        ))
+
+                    if self._priority_fee_microlamports > 0:
+                        # SetComputeUnitPrice instruction (discriminator = 3)
+                        fee_data = struct.pack("<BQ", 3, self._priority_fee_microlamports)
+                        instructions.append(Instruction(
+                            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+                            data=fee_data,
+                            accounts=[],
+                        ))
+
+                    logger.info(
+                        "[PRIORITY] CU limit=%d, fee=%d µlamp",
+                        self._compute_unit_limit, self._priority_fee_microlamports,
+                    )
+                except Exception as pf_err:
+                    logger.warning("[PRIORITY] Failed to add priority fees: %s", pf_err)
 
             # 7.2: ATA auto-creation — check if recipient ATA exists
             # Always use "confirmed" commitment for ATA check to avoid
@@ -171,11 +216,13 @@ class SolanaAdapter(BasePaymentProvider):
             instructions.append(ix)
 
             # 7.1: Memo injection (best-effort — failure doesn't block payment)
+            # Embed request_id for idempotency: "Ag402-v1|<request_id>"
+            effective_memo = f"{AG402_MEMO}|{request_id}" if request_id else AG402_MEMO
             try:
                 memo_program = Pubkey.from_string(MEMO_PROGRAM_ID)
                 memo_ix = Instruction(
                     program_id=memo_program,
-                    data=AG402_MEMO.encode("utf-8"),
+                    data=effective_memo.encode("utf-8"),
                     accounts=[
                         AccountMeta(
                             pubkey=self._keypair.pubkey(),
@@ -318,7 +365,8 @@ class SolanaAdapter(BasePaymentProvider):
                 )
 
             return PaymentResult(
-                tx_hash=tx_hash, success=True, chain="solana", memo=AG402_MEMO,
+                tx_hash=tx_hash, success=True, chain="solana",
+                memo=effective_memo, request_id=request_id,
                 confirmation_status=confirmation_status,
             )
 
@@ -328,34 +376,42 @@ class SolanaAdapter(BasePaymentProvider):
             )
 
     async def check_balance(self) -> float:
-        """Query USDC token balance for this wallet."""
+        """Query USDC token balance for this wallet (with RPC failover)."""
         try:
-            from spl.token.async_client import AsyncToken  # type: ignore[import-untyped]
-            from spl.token.constants import TOKEN_PROGRAM_ID  # type: ignore[import-untyped]
-            from spl.token.instructions import (
-                get_associated_token_address,  # type: ignore[import-untyped]
-            )
-
-            token_client = AsyncToken(
-                conn=self._client,
-                pubkey=self._usdc_mint,
-                program_id=TOKEN_PROGRAM_ID,
-                payer=self._keypair,
-            )
-            ata = get_associated_token_address(
-                self._keypair.pubkey(), self._usdc_mint
-            )
-            info = await asyncio.wait_for(
-                token_client.get_balance(ata),
-                timeout=self._confirm_timeout,
-            )
-            # info.value.ui_amount is already a float
-            return float(info.value.ui_amount or 0.0)
-        except asyncio.TimeoutError:
-            logger.warning("[BALANCE] Timed out querying balance")
-            return 0.0
+            return await self._check_balance_impl()
         except Exception:
+            # Failover to backup endpoint
+            new_url = self._endpoint_mgr.failover()
+            if new_url:
+                self._reconnect_client()
+                try:
+                    return await self._check_balance_impl()
+                except Exception:
+                    pass
             return 0.0
+
+    async def _check_balance_impl(self) -> float:
+        """Internal balance query implementation."""
+        from spl.token.async_client import AsyncToken  # type: ignore[import-untyped]
+        from spl.token.constants import TOKEN_PROGRAM_ID  # type: ignore[import-untyped]
+        from spl.token.instructions import (
+            get_associated_token_address,  # type: ignore[import-untyped]
+        )
+
+        token_client = AsyncToken(
+            conn=self._client,
+            pubkey=self._usdc_mint,
+            program_id=TOKEN_PROGRAM_ID,
+            payer=self._keypair,
+        )
+        ata = get_associated_token_address(
+            self._keypair.pubkey(), self._usdc_mint
+        )
+        info = await asyncio.wait_for(
+            token_client.get_balance(ata),
+            timeout=self._confirm_timeout,
+        )
+        return float(info.value.ui_amount or 0.0)
 
     async def verify_payment(
         self,
@@ -503,10 +559,15 @@ class MockSolanaAdapter(BasePaymentProvider):
         self._payments: list[PaymentResult] = []
 
     async def pay(
-        self, to_address: str, amount: float, token: str = "USDC"
+        self, to_address: str, amount: float, token: str = "USDC",
+        *, request_id: str = "",
     ) -> PaymentResult:
         tx_hash = f"mock_tx_{uuid.uuid4().hex}"
-        result = PaymentResult(tx_hash=tx_hash, success=True, chain="solana-mock", memo="Ag402-v1")
+        effective_memo = f"{AG402_MEMO}|{request_id}" if request_id else AG402_MEMO
+        result = PaymentResult(
+            tx_hash=tx_hash, success=True, chain="solana-mock",
+            memo=effective_memo, request_id=request_id,
+        )
         self._payments.append(result)
         self._balance -= amount
         return result

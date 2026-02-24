@@ -109,11 +109,12 @@ class X402PaymentProof:
     tx_hash: str  # On-chain transaction hash
     chain: str = "solana"
     payer_address: str = ""  # Sender wallet address
+    request_id: str = ""  # Idempotency key embedded in memo
 
     def to_auth_header(self) -> str:
         """Serialize to Authorization header value.
 
-        Format: x402 tx_hash="<hash>" payer_address="<addr>" chain="<chain>"
+        Format: x402 tx_hash="<hash>" payer_address="<addr>" chain="<chain>" request_id="<id>"
         Falls back to simple format if only tx_hash is available.
         """
         parts = [f'tx_hash="{self.tx_hash}"']
@@ -121,6 +122,8 @@ class X402PaymentProof:
             parts.append(f'payer_address="{self.payer_address}"')
         if self.chain:
             parts.append(f'chain="{self.chain}"')
+        if self.request_id:
+            parts.append(f'request_id="{self.request_id}"')
         return "x402 " + " ".join(parts)
 
 
@@ -221,6 +224,11 @@ X402_PROOF_SCHEMA: dict[str, Any] = {
         "payer_address": {
             "type": "string",
             "description": "Sender wallet address",
+            "default": "",
+        },
+        "request_id": {
+            "type": "string",
+            "description": "Idempotency key embedded in transaction memo for deduplication",
             "default": "",
         },
     },

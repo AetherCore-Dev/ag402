@@ -141,6 +141,7 @@ def parse_authorization(header_value: str) -> X402PaymentProof | None:
             tx_hash=fields["tx_hash"],
             chain=fields.get("chain", "solana"),
             payer_address=fields.get("payer_address", ""),
+            request_id=fields.get("request_id", ""),
         )
 
     # Legacy format: x402 <tx_hash> (no key=value pairs)

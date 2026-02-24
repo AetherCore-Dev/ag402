@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 
 import httpx
@@ -189,12 +190,15 @@ class X402PaymentMiddleware:
             logger.info("[DEDUCT] Reserved $%.4f from wallet (tx: %s)", amount, deduction_tx.id)
             await self._transition_order(order, OrderState.LOCAL_DEDUCTED, wallet_tx_id=deduction_tx.id)
 
-        # 7. Pay on-chain
-        logger.info("[PAY] Sending $%.4f %s to %s...", amount, challenge.token, challenge.address)
+        # 7. Pay on-chain (with request_id for idempotency)
+        request_id = uuid.uuid4().hex
+        logger.info("[PAY] Sending $%.4f %s to %s (request_id=%s)...",
+                     amount, challenge.token, challenge.address, request_id[:12])
         payment_result = await self.provider.pay(
             to_address=challenge.address,
             amount=amount,
             token=challenge.token,
+            request_id=request_id,
         )
 
         if not payment_result.success:
@@ -222,11 +226,12 @@ class X402PaymentMiddleware:
         # We MUST NOT rollback the local wallet deduction,
         # even if the retry request fails.
 
-        # 8. Retry with payment proof + Idempotency-Key
+        # 8. Retry with payment proof + Idempotency-Key + request_id
         proof = X402PaymentProof(
             tx_hash=payment_result.tx_hash,
             chain=challenge.chain,
             payer_address=self.provider.get_address(),
+            request_id=request_id,
         )
         retry_headers = dict(req_headers)
         retry_headers["Authorization"] = build_authorization(proof)

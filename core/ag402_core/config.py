@@ -146,6 +146,14 @@ class X402Config:
         default_factory=lambda: os.getenv("X402_WALLET_DB", os.path.expanduser("~/.ag402/wallet.db"))
     )
 
+    # --- Priority Fees ---
+    priority_fee_microlamports: int = field(
+        default_factory=lambda: _env_int("X402_PRIORITY_FEE", 0, 1_000_000)
+    )
+    compute_unit_limit: int = field(
+        default_factory=lambda: _env_int("X402_COMPUTE_UNIT_LIMIT", 0, 1_400_000)
+    )
+
     # --- Security ---
     replay_window_seconds: int = 30
     rate_limit_per_minute: int = field(

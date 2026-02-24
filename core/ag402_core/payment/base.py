@@ -23,6 +23,12 @@ class PaymentResult:
     - ``"sent"`` — transaction sent but confirmation timed out (may still succeed on-chain)
     - ``""`` — not applicable (mock, or failed before send)
     """
+    request_id: str = ""
+    """Unique request identifier embedded in memo for idempotency.
+
+    Format in memo: ``Ag402-v1|<request_id>``
+    Used by the gateway to deduplicate payment proofs.
+    """
 
 
 class BasePaymentProvider(ABC):
@@ -30,9 +36,15 @@ class BasePaymentProvider(ABC):
 
     @abstractmethod
     async def pay(
-        self, to_address: str, amount: float, token: str = "USDC"
+        self, to_address: str, amount: float, token: str = "USDC",
+        *, request_id: str = "",
     ) -> PaymentResult:
-        """Execute a payment on-chain. Returns tx_hash on success."""
+        """Execute a payment on-chain. Returns tx_hash on success.
+
+        Args:
+            request_id: Optional unique identifier embedded in the transaction
+                memo for idempotency (format: ``Ag402-v1|<request_id>``).
+        """
         ...
 
     @abstractmethod

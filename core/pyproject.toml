@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-core"
-version = "0.1.5"
+version = "0.1.6"
 description = "Payment engine for AI Agents — automatic HTTP 402 payment with Solana USDC"
 license = "MIT"
 readme = "README.md"
@@ -49,6 +49,7 @@ asyncio_mode = "auto"
 markers = [
     "devnet: marks tests that require Solana devnet access (deselect with '-m \"not devnet\"')",
     "localnet: marks tests that require solana-test-validator (deselect with '-m \"not localnet\"')",
+    "mainnet: marks tests that require Solana mainnet access and funded wallet (manual only)",
     "flaky: marks tests known to be flaky due to network conditions",
 ]
 timeout = 120
