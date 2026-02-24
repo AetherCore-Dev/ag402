@@ -406,7 +406,10 @@ make coverage       # Coverage report
 | Gateway adapter (MCP) | 5 | -- |
 | MCP Client adapter (buyer) | 39 | 95% |
 | Solana resilience (network errors, retries, timeouts) | 28 | -- |
-| **Subtotal** | **430+** | **90%+** |
+| Security TDD P0 (LIKE injection, amount validation, crypto, breaker) | 30 | 98% |
+| Security TDD P1 (clock rollback, replay, traversal, fuzzing, SSRF) | 56 | 95% |
+| Security TDD P2 (persistent replay, exhaustion, fault injection, gateway) | 23 | 92% |
+| **Subtotal** | **500+** | **90%+** |
 
 ### On-chain Integration Tests
 
@@ -416,7 +419,7 @@ make coverage       # Coverage report
 | Devnet (Solana public testnet) | 26 | devnet RPC | ✅ Nightly |
 | **Subtotal** | **49** | | |
 
-> **Total: 77 on-chain + 430+ unit = 500+ tests**
+> **Total: 77 on-chain + 430+ unit + 109 security TDD = 500+ tests**
 
 ### Test Infrastructure
 

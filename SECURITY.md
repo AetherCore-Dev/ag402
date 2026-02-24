@@ -54,6 +54,22 @@ A comprehensive security audit was performed on V1, identifying 24 issues across
 
 Total: 447 tests passing (up from 316 pre-audit), 0 regressions.
 
+## V1.3 Security TDD Audit (2026-02-24)
+
+109 new security-focused TDD tests added across three priority tiers:
+
+| Tier | Tests | Coverage |
+|------|-------|----------|
+| **P0** | 30 | SQL LIKE injection, negative/zero amount validation, encryption boundaries (key tamper/wrong password/memory wipe), circuit-breaker TOCTOU races |
+| **P1** | 56 | Clock rollback attacks, replay guard edge cases, path traversal, protocol fuzzing (null byte/Unicode/oversized headers), monkey-patch concurrency, SSRF IPv6-mapped bypass |
+| **P2** | 23 | Persistent replay guard, resource exhaustion, fault injection (corrupted DB/empty password), gateway 402 flow/rate limiting/header whitelist |
+
+Source code fixes:
+- **SQL LIKE wildcard injection**: Added `_escape_like()` to `AgentWallet` — escapes `%`, `_`, `\` before SQL `LIKE` clause
+- **Negative/zero amount bypass**: `deposit()` and `deduct()` now reject `amount <= 0` with `ValueError`
+
+Total: **500 tests** passing (391 existing + 109 new security TDD), 0 regressions.
+
 ## Responsible Disclosure
 
 We follow a responsible disclosure process. After a fix is available, we will:

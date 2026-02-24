@@ -150,6 +150,8 @@ class AgentWallet:
     async def deposit(self, amount: float | Decimal, note: str = "") -> Transaction:
         self._ensure_db()
         amount_d = _to_decimal(amount)
+        if amount_d <= 0:
+            raise ValueError("Amount must be positive")
         async with self._lock:
             tx = Transaction(
                 id=str(uuid4()),
@@ -167,6 +169,8 @@ class AgentWallet:
     async def deduct(self, amount: float | Decimal, to_address: str, tx_hash: str = "") -> Transaction:
         self._ensure_db()
         amount_d = _to_decimal(amount)
+        if amount_d <= 0:
+            raise ValueError("Amount must be positive")
         async with self._lock:
             balance = await self._calc_balance()
             if balance < amount_d:
@@ -275,14 +279,29 @@ class AgentWallet:
                 for r in rows
             ]
 
+    @staticmethod
+    def _escape_like(pattern: str, escape_char: str = "\\") -> str:
+        """Escape LIKE wildcards (%, _, \\) so they are treated as literals."""
+        return (
+            pattern
+            .replace(escape_char, escape_char + escape_char)
+            .replace("%", escape_char + "%")
+            .replace("_", escape_char + "_")
+        )
+
     async def find_transactions_by_prefix(self, id_prefix: str, limit: int = 10) -> list[Transaction]:
-        """Find transactions whose ID starts with the given prefix (SQL LIKE)."""
+        """Find transactions whose ID starts with the given prefix (SQL LIKE).
+
+        LIKE wildcards in *id_prefix* are escaped so they are treated as
+        literal characters.
+        """
         self._ensure_db()
+        escaped = self._escape_like(id_prefix)
         async with self._lock:
             cursor = await self._db.execute(
                 "SELECT id, type, amount, to_address, tx_hash, status, timestamp, note "
-                "FROM transactions WHERE id LIKE ? ORDER BY timestamp DESC LIMIT ?",
-                (id_prefix + "%", limit),
+                "FROM transactions WHERE id LIKE ? ESCAPE '\\' ORDER BY timestamp DESC LIMIT ?",
+                (escaped + "%", limit),
             )
             rows = await cursor.fetchall()
             return [

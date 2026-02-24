@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-02-24
+
+### Fixed
+
+- **SQL LIKE wildcard injection**: Added `_escape_like()` to `AgentWallet` — escapes `%`, `_`, `\` in user-supplied prefixes before passing to SQL `LIKE` clause with `ESCAPE '\'`
+- **Negative/zero amount bypass**: `deposit()` and `deduct()` now reject `amount <= 0` with `ValueError("Amount must be positive")` — prevents balance manipulation via negative deposits or deductions
+
+### Added
+
+- **109 security TDD tests** across three priority tiers:
+  - **P0 (30 tests)**: SQL LIKE injection, negative/zero amount validation, encryption boundary conditions, circuit-breaker TOCTOU race conditions
+  - **P1 (56 tests)**: Clock rollback attacks, replay guard edge cases, path traversal (`../` escape), protocol fuzzing (null bytes, Unicode, oversized headers), monkey-patch concurrency, SSRF IPv6-mapped bypass
+  - **P2 (23 tests)**: Persistent replay guard, resource exhaustion, fault injection (corrupted DB), gateway 402 flow / rate limiting / header whitelist
+- **Three-layer timeout protection**: Process-level (`subprocess.run(timeout=60)`), function-level (`pytest.mark.timeout(15)`), thread-level (`Barrier(timeout=5)`, `thread.join(timeout=10)`)
+- Total test count: **500+ tests** (391 existing + 109 new security tests), all passing
+
 ## [0.1.2] - 2026-02-23
 
 ### Fixed
