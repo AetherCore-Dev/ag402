@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "open402"
-version = "0.1.2"
+version = "0.1.4"
 description = "Reference implementation of the x402 payment protocol for AI Agents"
 readme = "README.md"
 license = "MIT"

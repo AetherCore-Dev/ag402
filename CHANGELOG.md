@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-02-24
+
+### Fixed
+
+- **Monkey-patch infinite recursion**: `_patched_send` now uses a `contextvars` re-entrancy guard to prevent middleware's own httpx requests from being re-intercepted — previously caused infinite recursion and repeated payments when the server returned 402
+- **`enabled()` nesting bug**: Replaced `_enabled` boolean with `_enable_depth` reference counter — nested `enabled()` context managers no longer break the outer scope on inner exit
+- **Middleware init race condition**: `_get_initialized_middleware()` now uses `asyncio.Lock` with double-checked locking to prevent concurrent callers from both running `init_db()` and double-depositing test funds
+
+### Added
+
+- 7 new tests: re-entrancy guard, nested `enabled()` (5 cases), concurrent init race
+- Total test count: 500+ tests, all passing
+
 ## [0.1.3] - 2026-02-24
 
 ### Fixed

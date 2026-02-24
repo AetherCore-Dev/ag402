@@ -495,7 +495,7 @@ class TestServerModule:
 
     def test_package_version(self):
         from ag402_client_mcp import __version__
-        assert __version__ == "0.1.0"
+        assert __version__ == "0.1.4"
 
 
 # ─── Initialization Tests ────────────────────────────────────────────
