@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-24
+
+### Added
+
+- **Release process skill**: `.claude/skills/releasing-to-pypi/SKILL.md` — checklist-driven release workflow preventing tag/version/lint mismatches that cause PyPI publish failures
+
+### Fixed
+
+- **Security test compatibility**: Updated `test_monkey_enable_disable_idempotent` and `test_monkey_concurrent_enable_disable` in `test_security_tdd_p1.py` to work with the reference-counted `enable()`/`disable()` introduced in v0.1.4
+
 ## [0.1.4] - 2026-02-24
 
 ### Fixed

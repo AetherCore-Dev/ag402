@@ -51,8 +51,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Claude internal
-.claude/
+# Claude internal (keep skills/ tracked for team sharing)
+.claude/*
+!.claude/skills/
 
 # CodeBuddy internal
 .codebuddy/

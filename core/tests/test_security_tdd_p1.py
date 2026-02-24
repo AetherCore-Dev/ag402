@@ -464,7 +464,7 @@ def test_parse_authorization_wrong_scheme():
 # ===================================================================
 
 def test_monkey_enable_disable_idempotent():
-    """enable() twice should be no-op, disable() twice should be no-op."""
+    """enable() is ref-counted; each enable() needs a matching disable()."""
     from ag402_core import monkey
 
     # Ensure clean state
@@ -475,16 +475,21 @@ def test_monkey_enable_disable_idempotent():
         monkey.enable()
         assert monkey.is_enabled()
 
-        monkey.enable()  # second call = no-op
+        monkey.enable()  # second call increments depth to 2
         assert monkey.is_enabled()
 
-        monkey.disable()
+        monkey.disable()  # depth 2 -> 1, still enabled
+        assert monkey.is_enabled()
+
+        monkey.disable()  # depth 1 -> 0, now disabled
         assert not monkey.is_enabled()
 
-        monkey.disable()  # second call = no-op
+        monkey.disable()  # extra disable = no-op
         assert not monkey.is_enabled()
     finally:
-        monkey.disable()
+        # Drain any remaining depth
+        while monkey.is_enabled():
+            monkey.disable()
 
 
 def test_monkey_context_manager():
@@ -543,7 +548,9 @@ def test_monkey_concurrent_enable_disable():
         if t.is_alive():
             errors.append(TimeoutError(f"Thread {t.name} hung"))
 
-    monkey.disable()  # cleanup
+    # Drain all remaining depth from concurrent enable() calls
+    while monkey.is_enabled():
+        monkey.disable()
 
     assert not errors, f"Concurrent monkey-patch errors: {errors}"
     assert not monkey.is_enabled()
