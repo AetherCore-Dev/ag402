@@ -229,6 +229,36 @@ class X402Gateway:
                 )
 
             # 5b. Persistent tx_hash replay check (survives restarts)
+            #
+            # TODO(P1-RECEIPT-REUSE): Paid-receipt grace window (target: pre-mainnet)
+            # ──────────────────────────────────────────────────────────────
+            # PROBLEM: tx_hash is marked "consumed" HERE, BEFORE _proxy_request().
+            # If the upstream returns 502 / times out, the buyer has paid on-chain
+            # but cannot retry — the same tx_hash is rejected as a replay.
+            # This is a real money-loss path in production.
+            #
+            # SOLUTION (3 parts, must be done together):
+            #
+            # 1. RESPONSE CACHE — After a successful _proxy_request(), cache the
+            #    response (status, headers, body) keyed by tx_hash with a 5-minute
+            #    TTL. When a duplicate tx_hash arrives within the window, return
+            #    the cached response directly instead of rejecting with 402.
+            #    Data structure: SQLite table or in-memory LRU with TTL.
+            #
+            # 2. GRACE WINDOW — Change check_and_record_tx() to return a 3-state
+            #    result: NEW / WITHIN_GRACE / EXPIRED. Within grace (e.g. 300s),
+            #    the gateway should look up the cached response. After grace,
+            #    reject as today.
+            #
+            # 3. PROXY FAILURE HANDLING — If _proxy_request() fails AFTER the
+            #    tx_hash is recorded, mark it as "consumed_but_undelivered" so
+            #    the buyer can retry. Do NOT cache the 502 error response.
+            #
+            # Estimated scope: ~200 lines in this file + ~100 lines in
+            # replay_guard.py. See also the companion TODOs in:
+            #   - core/ag402_core/middleware/x402_middleware.py  (client retry)
+            #   - core/ag402_core/wallet/payment_order.py       (stale delivery worker)
+            # ──────────────────────────────────────────────────────────────
             is_new = await self._persistent_guard.check_and_record_tx(result.tx_hash)
             if not is_new:
                 logger.warning("[GATEWAY] Duplicate tx_hash rejected: %s", result.tx_hash[:32])

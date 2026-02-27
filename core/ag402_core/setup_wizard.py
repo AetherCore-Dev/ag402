@@ -92,6 +92,7 @@ class SetupResult:
     def __init__(self) -> None:
         self.role: str = "consumer"  # consumer | provider | both
         self.mode: str = "test"  # test | production
+        self.network: str = "localnet"  # localnet | devnet | mainnet
         self.password: str = ""
         self.private_key: str = ""
         self.daily_limit: float = 10.0
@@ -125,15 +126,25 @@ def run_setup_wizard() -> SetupResult:
     print(f"  {green('✓')} Selected: {role_label}")
     print()
 
-    # ── Step 2: Mode selection ──
-    _print_step(2, 5, "Run mode")
-    mode_choice = _prompt_choice("", [
-        "🧪 Test mode (recommended for beginners) — virtual funds, safe to experiment",
-        "🚀 Production mode — real Solana USDC",
+    # ── Step 2: Network environment ──
+    _print_step(2, 5, "Network environment")
+    net_choice = _prompt_choice("", [
+        "🧪 Local Testnet (localnet) — solana-test-validator on localhost, zero cost",
+        "🌐 Devnet (devnet) — Solana public test network, free test tokens",
+        "🚀 Mainnet (production) — Real Solana USDC, real money",
     ])
-    result.mode = "test" if mode_choice == 1 else "production"
-    mode_label = "Test mode" if mode_choice == 1 else "Production mode"
-    print(f"  {green('✓')} Selected: {mode_label}")
+    net_map = {
+        1: ("test", "localnet"),
+        2: ("test", "devnet"),
+        3: ("production", "mainnet"),
+    }
+    result.mode, result.network = net_map[net_choice]
+    net_label = {1: "Local Testnet", 2: "Devnet", 3: "Mainnet"}[net_choice]
+    print(f"  {green('✓')} Selected: {net_label}")
+    print()
+
+    # Print network-specific prerequisites
+    _print_network_prerequisites(result.network)
     print()
 
     # ── Step 3: Wallet / Key setup ──
@@ -164,14 +175,31 @@ def run_setup_wizard() -> SetupResult:
 
 
 def _setup_wallet(result: SetupResult) -> None:
-    """Configure wallet (both test and production modes)."""
-    if result.mode == "test":
-        # Generate mock private key
+    """Configure wallet (localnet, devnet, and mainnet modes)."""
+    if result.network == "localnet":
+        # Generate mock private key for localnet
         mock_key = f"test_key_{uuid.uuid4().hex}"
         result.private_key = mock_key
         print(f"  Generating test key pair... {green('✓')}")
+    elif result.network == "devnet":
+        # Devnet: generate a real Solana keypair or import existing
+        print("  Devnet requires a real Solana keypair for airdrop funding.")
+        print()
+        key_choice = _prompt_choice("", [
+            "Generate a new devnet keypair",
+            "Import an existing private key (base58)",
+        ])
+        if key_choice == 1:
+            _generate_devnet_keypair(result)
+        else:
+            print(f"  {dim('(Private key will not be shown on screen)')}")
+            result.private_key = getpass.getpass("  Private key (base58): ")
+            if not result.private_key.strip():
+                print(f"  {red('✗')} No private key provided, cannot continue")
+                raise SystemExit(1)
+            print(f"  {green('✓')} Private key received")
     else:
-        # Production: user provides real private key
+        # Mainnet: user provides real private key
         print("  Please enter your Solana private key (base58 encoded):")
         print(f"  {dim('(Private key will not be shown on screen)')}")
         result.private_key = getpass.getpass("  Private key: ")
@@ -266,6 +294,7 @@ def _save_configuration(result: SetupResult) -> None:
 
     env_entries: dict[str, str] = {
         "X402_MODE": result.mode,
+        "X402_NETWORK": result.network,
         "AG402_ROLE": result.role,
     }
 
@@ -286,14 +315,30 @@ def _save_configuration(result: SetupResult) -> None:
             "AG402_TARGET_API": result.target_api_url,
         })
 
-    # Network settings for production
-    if result.mode == "production":
-        env_entries["SOLANA_RPC_URL"] = "https://api.mainnet-beta.solana.com"
-    else:
-        env_entries["SOLANA_RPC_URL"] = "https://api.devnet.solana.com"
+    # Network-specific settings
+    _rpc_urls = {
+        "localnet": "http://127.0.0.1:8899",
+        "devnet": "https://api.devnet.solana.com",
+        "mainnet": "https://api.mainnet-beta.solana.com",
+    }
+    env_entries["SOLANA_RPC_URL"] = _rpc_urls[result.network]
+
+    # USDC mint addresses (localnet creates at runtime, so skip)
+    _usdc_mints = {
+        "devnet": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "mainnet": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    }
+    if result.network in _usdc_mints:
+        env_entries["USDC_MINT_ADDRESS"] = _usdc_mints[result.network]
 
     save_env_file(env_entries, merge=False)
     print(f"  {green('✓')} Configuration saved: {dim('~/.ag402/.env')}")
+    print()
+
+    # Show summary of key env vars written
+    print(f"  {bold('Saved configuration:')}")
+    for key, val in env_entries.items():
+        print(f"    {dim(key)}={val}")
 
 
 def _print_setup_banner() -> None:
@@ -316,11 +361,27 @@ def _print_completion(result: SetupResult) -> None:
     print(f"  🎉 {bold('Ag402 is ready!')}")
     print()
 
+    # Configuration management box
+    print("  ┌─────────── Configuration ─────────────────────┐")
+    print("  │                                                │")
+    print(f"  │  View config:    {cyan('ag402 env show')}                │")
+    print(f"  │  Edit a value:   {cyan('ag402 env set KEY value')}       │")
+    print(f"  │  Config file:    {dim('~/.ag402/.env')}                  │")
+    print(f"  │  Examples:       {cyan('ag402 setup --show-examples')}   │")
+    print("  │                                                │")
+    print("  └────────────────────────────────────────────────┘")
+    print()
+
     if result.role in ("consumer", "both"):
         print("  ┌─────────── Next Steps ────────────────────────┐")
         print("  │                                                │")
-        print("  │  Try it out:                                   │")
-        print(f"  │  $ {cyan('ag402 demo')}           Run a live demo     │")
+        if result.network == "localnet":
+            print(f"  │  Start validator: {cyan('solana-test-validator --reset')} │")
+            print(f"  │  Run demo:        {cyan('ag402 demo --localnet')}        │")
+        elif result.network == "devnet":
+            print(f"  │  Run demo:        {cyan('ag402 demo --devnet')}          │")
+        else:
+            print(f"  │  Check balance:   {cyan('ag402 status')}                 │")
         print("  │                                                │")
         print("  │  Integrate your Agent:                         │")
         print(f"  │  $ {cyan('ag402 run -- python my_agent.py')}         │")
@@ -343,6 +404,130 @@ def _print_completion(result: SetupResult) -> None:
         print("  │                                                │")
         print("  └────────────────────────────────────────────────┘")
 
+    print()
+
+
+def _print_network_prerequisites(network: str) -> None:
+    """Print inline prerequisite guidance after network selection."""
+    if network == "localnet":
+        print(f"  {bold('Prerequisites:')}")
+        install_cmd = 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"'
+        print(f"  • Install Solana CLI: {cyan(install_cmd)}")
+        print(f"  • Start validator:   {cyan('solana-test-validator --reset')}")
+        # Non-blocking check: warn if validator not running
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://127.0.0.1:8899", method="HEAD")
+            urllib.request.urlopen(req, timeout=1)
+        except Exception:
+            print()
+            print(f"  {yellow('⚠')} solana-test-validator does not appear to be running on localhost:8899")
+            print(f"  {dim('  (This is fine — you can start it later before running demos)')}")
+    elif network == "devnet":
+        print(f"  {bold('Prerequisites:')}")
+        print(f"  • Generate a keypair:  {cyan('solana-keygen new -o ~/.ag402/devnet-buyer.json')}")
+        print(f"  • Fund with SOL:       {cyan('solana airdrop 2 <PUBKEY> --url https://api.devnet.solana.com')}")
+        print(f"  • Or use faucet:       {cyan('https://faucet.solana.com/')}")
+    elif network == "mainnet":
+        print(f"  {yellow('⚠')} WARNING: This uses real funds. Ensure your wallet has SOL + USDC.")
+
+
+def _generate_devnet_keypair(result: SetupResult) -> None:
+    """Generate a real Solana keypair for devnet usage."""
+    try:
+        from solders.keypair import Keypair  # type: ignore[import-untyped]
+
+        kp = Keypair()
+        result.private_key = str(kp)
+        pubkey = str(kp.pubkey())
+
+        keypair_dir = os.path.expanduser("~/.ag402")
+        os.makedirs(keypair_dir, exist_ok=True)
+        keypair_path = os.path.join(keypair_dir, "devnet-buyer.json")
+
+        # Save keypair bytes as JSON array (same format as solana-keygen)
+        import json
+        kp_bytes = list(bytes(kp))
+        with open(keypair_path, "w") as f:
+            json.dump(kp_bytes, f)
+        os.chmod(keypair_path, 0o600)
+
+        print(f"  {green('✓')} Keypair generated")
+        print(f"  {bold('Public key:')} {pubkey}")
+        print(f"  {dim('Keypair saved:')} {keypair_path}")
+        print()
+        print(f"  Fund this account for devnet testing:")
+        print(f"    {cyan(f'solana airdrop 2 {pubkey} --url https://api.devnet.solana.com')}")
+    except ImportError:
+        print(f"  {yellow('⚠')} solders package not installed, generating placeholder key")
+        print(f"  {dim('  Install: pip install solders')}")
+        mock_key = f"test_key_{uuid.uuid4().hex}"
+        result.private_key = mock_key
+        print(f"  {green('✓')} Generated placeholder key (replace with a real keypair for devnet)")
+
+
+def print_env_examples() -> None:
+    """Print 3 complete .env examples for localnet / devnet / mainnet."""
+    print()
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print(bold("    Example 1: Localnet (solana-test-validator)"))
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print()
+    print(dim("  # ~/.ag402/.env"))
+    print("  X402_MODE=test")
+    print("  X402_NETWORK=localnet")
+    print("  AG402_ROLE=consumer")
+    print("  SOLANA_RPC_URL=http://127.0.0.1:8899")
+    print("  X402_DAILY_LIMIT=10.0")
+    print("  X402_SINGLE_TX_LIMIT=5.0")
+    print("  X402_PER_MINUTE_LIMIT=2.0")
+    print("  X402_PER_MINUTE_COUNT=5")
+    print()
+    print(f"  {bold('Prerequisites:')}")
+    print(f"    $ {cyan('solana-test-validator --reset')}")
+    print(f"    $ {cyan('ag402 demo --localnet')}")
+    print()
+
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print(bold("    Example 2: Devnet (Solana test network)"))
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print()
+    print(dim("  # ~/.ag402/.env"))
+    print("  X402_MODE=test")
+    print("  X402_NETWORK=devnet")
+    print("  AG402_ROLE=consumer")
+    print("  SOLANA_RPC_URL=https://api.devnet.solana.com")
+    print("  USDC_MINT_ADDRESS=4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+    print("  SOLANA_PRIVATE_KEY=<your-base58-private-key>")
+    print("  X402_DAILY_LIMIT=10.0")
+    print("  X402_SINGLE_TX_LIMIT=5.0")
+    print("  X402_PER_MINUTE_LIMIT=2.0")
+    print("  X402_PER_MINUTE_COUNT=5")
+    print()
+    print(dim("  # For running devnet tests:"))
+    print("  DEVNET_BUYER_PRIVATE_KEY=<same-as-SOLANA_PRIVATE_KEY>")
+    print()
+    print(f"  {bold('Prerequisites:')}")
+    print(f"    $ {cyan('solana-keygen new -o ~/.ag402/devnet-buyer.json')}")
+    print(f"    $ {cyan('solana airdrop 2 $(solana-keygen pubkey ~/.ag402/devnet-buyer.json) --url devnet')}")
+    print(f"    $ {cyan('ag402 demo --devnet')}")
+    print()
+
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print(bold("    Example 3: Mainnet (real USDC)"))
+    print(bold("  ═══════════════════════════════════════════════════════════"))
+    print()
+    print(dim("  # ~/.ag402/.env"))
+    print("  X402_MODE=production")
+    print("  X402_NETWORK=mainnet")
+    print("  AG402_ROLE=consumer")
+    print("  SOLANA_RPC_URL=https://api.mainnet-beta.solana.com")
+    print("  USDC_MINT_ADDRESS=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    print("  SOLANA_PRIVATE_KEY=<your-base58-private-key>")
+    print("  X402_DAILY_LIMIT=10.0")
+    print("  X402_SINGLE_TX_LIMIT=5.0")
+    print()
+    print(f"  {yellow('⚠')} Uses real funds. Double-check your wallet balance before use.")
     print()
 
 

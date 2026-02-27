@@ -96,7 +96,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     # --- setup (NEW — interactive wizard) ---
-    sub.add_parser("setup", help="Interactive setup wizard (recommended for first use)")
+    setup_p = sub.add_parser("setup", help="Interactive setup wizard (recommended for first use)")
+    setup_p.add_argument("--show-examples", action="store_true",
+                         help="Show example .env configurations for each network")
 
     # --- init (legacy, still works) ---
     init_p = sub.add_parser("init", help="Initialize wallet + deposit test funds")
@@ -233,7 +235,7 @@ def main() -> None:
             sys.exit(0)
 
         dispatch = {
-            "setup": lambda: _cmd_setup(),
+            "setup": lambda: _cmd_setup(args),
             "init": lambda: asyncio.run(_cmd_init(args.db)),
             "run": lambda: _cmd_run(args),
             "env": lambda: _cmd_env(args),
@@ -405,9 +407,13 @@ def _cmd_mcp_config(args) -> None:
         print_all_configs()
 
 
-def _cmd_setup() -> None:
+def _cmd_setup(args) -> None:
     """Launch the interactive setup wizard."""
-    from ag402_core.setup_wizard import init_wallet_after_setup, run_setup_wizard
+    from ag402_core.setup_wizard import init_wallet_after_setup, print_env_examples, run_setup_wizard
+
+    if getattr(args, "show_examples", False):
+        print_env_examples()
+        return
 
     result = run_setup_wizard()
     # Initialize wallet DB and deposit test funds

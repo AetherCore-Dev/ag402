@@ -246,6 +246,28 @@ class X402PaymentMiddleware:
         if retry_response.status_code >= 400:
             # Retry failed — DO NOT rollback (chain payment is real)
             # Leave order in DELIVERING state for async background worker
+            #
+            # TODO(P1-RECEIPT-REUSE): Implement delivery retry worker
+            # ──────────────────────────────────────────────────────────
+            # Currently the order is left in DELIVERING state and never
+            # retried. The infrastructure exists (get_stale_deliveries()
+            # in payment_order.py, retry_count field) but no background
+            # worker actually processes them.
+            #
+            # NEEDS:
+            # 1. A background asyncio task (delivery_worker) that polls
+            #    get_stale_deliveries() every ~30s and retries with the
+            #    stored request + same tx_hash proof.
+            # 2. Exponential backoff (30s → 60s → 120s), max 5 retries.
+            # 3. After max retries, transition to a new FAILED terminal
+            #    state and surface via `ag402 status` for manual review.
+            # 4. The gateway must accept retry requests with a previously
+            #    consumed tx_hash within a grace window (see the companion
+            #    TODO in adapters/mcp/ag402_mcp/gateway.py).
+            #
+            # Prerequisite: the gateway-side response cache / grace window
+            # must land first, otherwise retries will be rejected.
+            # ──────────────────────────────────────────────────────────
             logger.error(
                 "[RETRY] Failed with status %d -- order stays in DELIVERING for async retry",
                 retry_response.status_code,
