@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ag402 — Automatic HTTP 402 Payments for AI Agents</title>
+<meta name="description" content="Give AI agents the ability to autonomously pay for API calls. HTTP 402 standard, Solana USDC settlement, 2-line integration.">
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0e17;
+  --surface: #111827;
+  --border: #1e293b;
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --accent: #06b6d4;
+  --accent-glow: rgba(6, 182, 212, 0.15);
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --purple: #a78bfa;
+  --font: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Container ── */
+.container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+/* ── Hero ── */
+.hero {
+  min-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  position: relative;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+  pointer-events: none;
+}
+.badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+  font-family: var(--font);
+}
+.badge span { color: var(--green); }
+h1 {
+  font-size: clamp(40px, 7vw, 72px);
+  font-weight: 700;
+  letter-spacing: -2px;
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+h1 .accent { color: var(--accent); }
+.tagline {
+  font-size: 18px;
+  color: var(--text-dim);
+  max-width: 520px;
+  margin-bottom: 40px;
+}
+
+/* ── Terminal ── */
+.terminal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  width: 100%;
+  max-width: 560px;
+  text-align: left;
+  font-family: var(--font);
+  font-size: 14px;
+  overflow: hidden;
+  margin-bottom: 36px;
+}
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--border);
+}
+.terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
+.terminal-dot.r { background: #ef4444; }
+.terminal-dot.y { background: #eab308; }
+.terminal-dot.g { background: #22c55e; }
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.terminal-body { padding: 16px 18px; line-height: 1.8; }
+.terminal-body .prompt { color: var(--green); }
+.terminal-body .cmd { color: var(--text); }
+.terminal-body .comment { color: var(--text-dim); }
+.terminal-body .highlight { color: var(--accent); }
+.terminal-body .line {
+  opacity: 0;
+  animation: typeLine 0.4s forwards;
+}
+.terminal-body .line:nth-child(1) { animation-delay: 0.3s; }
+.terminal-body .line:nth-child(2) { animation-delay: 0.9s; }
+.terminal-body .line:nth-child(3) { animation-delay: 1.5s; }
+.terminal-body .line:nth-child(4) { animation-delay: 2.1s; }
+.terminal-body .line:nth-child(5) { animation-delay: 2.7s; }
+@keyframes typeLine {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Buttons ── */
+.buttons { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: none;
+  font-family: var(--sans);
+}
+.btn-primary {
+  background: var(--accent);
+  color: #000;
+}
+.btn-primary:hover { background: #22d3ee; text-decoration: none; }
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { border-color: var(--accent); text-decoration: none; }
+
+/* ── Section ── */
+section { padding: 80px 0; }
+.section-label {
+  font-family: var(--font);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+h2 {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  margin-bottom: 40px;
+}
+
+/* ── Flow (How It Works) ── */
+.flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  flex-wrap: wrap;
+}
+.flow-step {
+  text-align: center;
+  padding: 20px 16px;
+  flex: 0 0 auto;
+}
+.flow-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 12px;
+  font-size: 24px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.flow-step h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.flow-step p { font-size: 12px; color: var(--text-dim); max-width: 120px; margin: 0 auto; }
+.flow-arrow {
+  font-size: 20px;
+  color: var(--accent);
+  flex: 0 0 auto;
+  padding: 0 4px;
+  animation: pulseArrow 2s ease-in-out infinite;
+}
+@keyframes pulseArrow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* ── Cards ── */
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 24px;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: var(--accent); }
+.card-icon { font-size: 28px; margin-bottom: 14px; }
+.card h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+.card p { font-size: 14px; color: var(--text-dim); line-height: 1.6; }
+.card ul {
+  list-style: none;
+  margin-top: 12px;
+}
+.card ul li {
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+.card ul li::before {
+  content: '\2713  ';
+  color: var(--green);
+  font-weight: 700;
+}
+
+/* ── Comparison Table ── */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td { padding: 14px 18px; text-align: left; }
+th {
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+td { border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+td:first-child { font-weight: 500; }
+.yes { color: var(--green); }
+.no { color: #ef4444; }
+.partial { color: var(--orange); }
+
+/* ── Architecture ── */
+.arch {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+.arch-layer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: border-color 0.2s;
+}
+.arch-layer:hover { border-color: var(--accent); }
+.arch-num {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-glow);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.arch-layer h3 { font-size: 15px; font-weight: 600; }
+.arch-layer p { font-size: 13px; color: var(--text-dim); }
+.arch-connector {
+  width: 2px;
+  height: 12px;
+  background: var(--border);
+  margin: 0 auto;
+}
+
+/* ── Stats ── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  text-align: center;
+}
+.stat {
+  padding: 24px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.stat-num {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: var(--font);
+  color: var(--accent);
+}
+.stat-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* ── Footer ── */
+footer {
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+footer .links { display: flex; gap: 24px; justify-content: center; margin-bottom: 12px; }
+footer a { color: var(--text-dim); }
+footer a:hover { color: var(--accent); }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .cards { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .flow { flex-direction: column; }
+  .flow-arrow { transform: rotate(90deg); }
+  h1 { letter-spacing: -1px; }
+  section { padding: 60px 0; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="container">
+    <div class="badge"><span>&#9679;</span> v0.1.9 — Open Source</div>
+    <h1><span class="accent">Ag402</span></h1>
+    <p class="tagline">Automatic HTTP 402 payments for AI agents. Two lines of Python. Non-custodial. Solana USDC settlement.</p>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dot r"></div>
+        <div class="terminal-dot y"></div>
+        <div class="terminal-dot g"></div>
+        <span class="terminal-title">python3</span>
+      </div>
+      <div class="terminal-body">
+        <div class="line"><span class="prompt">$ </span><span class="cmd">pip install <span class="highlight">ag402-core</span></span></div>
+        <div class="line"><span class="comment"># That's it. Two lines to enable agent payments:</span></div>
+        <div class="line"><span class="cmd"><span class="highlight">import</span> ag402_core</span></div>
+        <div class="line"><span class="cmd">ag402_core.<span class="highlight">enable</span>()</span></div>
+        <div class="line"><span class="comment"># Your agent can now pay for any 402-protected API</span></div>
+      </div>
+    </div>
+
+    <div class="buttons">
+      <a href="https://github.com/AetherCore-Dev/ag402" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+      <a href="https://pypi.org/project/ag402-core/" class="btn btn-ghost">PyPI</a>
+      <a href="#how-it-works" class="btn btn-ghost">How It Works</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── How It Works ── -->
+<section id="how-it-works">
+  <div class="container">
+    <div class="section-label">How It Works</div>
+    <h2>Transparent Payment in 4 Steps</h2>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-icon">&#129302;</div>
+        <h3>Agent Calls API</h3>
+        <p>Normal HTTP request, no changes needed</p>
+      </div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-step">
+        <div class="flow-icon">&#128274;</div>
+        <h3>402 Challenge</h3>
+        <p>Server responds with payment terms</p>
+      </div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-step">
+        <div class="flow-icon">&#128184;</div>
+        <h3>Auto Payment</h3>
+        <p>Ag402 pays via Solana USDC on-chain</p>
+      </div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-step">
+        <div class="flow-icon">&#9989;</div>
+        <h3>Get Response</h3>
+        <p>Agent receives data seamlessly</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Audience Cards ── -->
+<section id="for-you">
+  <div class="container">
+    <div class="section-label">Built For</div>
+    <h2>Both Sides of the Market</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">&#127978;</div>
+        <h3>API Providers (Sellers)</h3>
+        <p>Monetize any API with HTTP 402 in minutes. No signup forms, no API key management, no invoicing.</p>
+        <ul>
+          <li>Wrap any endpoint with X402Gateway</li>
+          <li>Set price per call in USDC</li>
+          <li>Instant settlement, no chargebacks</li>
+          <li>Automatic replay protection</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-icon">&#129302;</div>
+        <h3>AI Developers (Buyers)</h3>
+        <p>Give your agent a wallet and let it pay for tools autonomously. Zero code changes to your existing logic.</p>
+        <ul>
+          <li>2-line integration via monkey-patch</li>
+          <li>6-layer budget safety system</li>
+          <li>Works with Claude, Cursor, LangChain</li>
+          <li>Non-custodial encrypted wallet</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Comparison ── -->
+<section id="comparison">
+  <div class="container">
+    <div class="section-label">Why Ag402</div>
+    <h2>vs Traditional Solutions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Ag402</th>
+            <th>API Keys</th>
+            <th>Stripe / PayPal</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Setup for agents</td>
+            <td class="yes">2 lines</td>
+            <td class="partial">Manual signup</td>
+            <td class="no">Complex OAuth</td>
+          </tr>
+          <tr>
+            <td>AI-native</td>
+            <td class="yes">Yes — built for agents</td>
+            <td class="no">No</td>
+            <td class="no">No</td>
+          </tr>
+          <tr>
+            <td>Micro-payments</td>
+            <td class="yes">$0.001+ per call</td>
+            <td class="no">N/A</td>
+            <td class="partial">High fees</td>
+          </tr>
+          <tr>
+            <td>Non-custodial</td>
+            <td class="yes">Yes — your keys</td>
+            <td class="partial">Provider holds</td>
+            <td class="no">Custodial</td>
+          </tr>
+          <tr>
+            <td>Settlement</td>
+            <td class="yes">Instant on-chain</td>
+            <td class="partial">Monthly invoice</td>
+            <td class="partial">3-5 days</td>
+          </tr>
+          <tr>
+            <td>HTTP Standard</td>
+            <td class="yes">402 Payment Required</td>
+            <td class="no">Proprietary</td>
+            <td class="no">Proprietary</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── Architecture ── -->
+<section id="architecture">
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2>Three Clean Layers</h2>
+    <div class="arch">
+      <div class="arch-layer">
+        <div class="arch-num">L1</div>
+        <div>
+          <h3>Protocol — open402</h3>
+          <p>Zero-dependency protocol types. HTTP 402 header parsing, challenge/proof schemas.</p>
+        </div>
+      </div>
+      <div class="arch-connector"></div>
+      <div class="arch-layer">
+        <div class="arch-num">L2</div>
+        <div>
+          <h3>Core — ag402-core</h3>
+          <p>Payment engine: wallet, budget guard, state machine, monkey-patch SDK, CLI.</p>
+        </div>
+      </div>
+      <div class="arch-connector"></div>
+      <div class="arch-layer">
+        <div class="arch-num">L3</div>
+        <div>
+          <h3>Adapters — MCP, Claude Code, OpenClaw</h3>
+          <p>Plug into any AI tool. Gateway (seller-side) and Client (buyer-side) adapters.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Stats ── -->
+<section id="stats">
+  <div class="container">
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-num">602+</div>
+        <div class="stat-label">Tests Passing</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">6</div>
+        <div class="stat-label">Safety Layers</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">2</div>
+        <div class="stat-label">Lines to Start</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">&lt;1s</div>
+        <div class="stat-label">Settlement</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="container">
+    <div class="links">
+      <a href="https://github.com/AetherCore-Dev/ag402">GitHub</a>
+      <a href="https://pypi.org/project/ag402-core/">PyPI</a>
+      <a href="https://github.com/AetherCore-Dev/ag402/blob/main/LICENSE">MIT License</a>
+      <a href="https://github.com/AetherCore-Dev/ag402/blob/main/CONTRIBUTING.md">Contributing</a>
+    </div>
+    <p>Ag402 — Open-source payment infrastructure for the AI agent economy.</p>
+  </div>
+</footer>
+
+</body>
+</html>
