@@ -14,35 +14,16 @@ Provides commands for:
 from __future__ import annotations
 
 import asyncio
-import fcntl
-import ipaddress
 import json
 import os
-import os
-
-# P1 Fix: API Key for authentication
-API_KEY = os.getenv("AG402_API_KEY", "")
-
 import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
-
-# Import prepaid client for prepaid payment support
-try:
-    from prepaid_client import check_and_deduct, get_prepaid_status, fallback_to_standard_payment
-    from prepaid_models import PrepaidCredential
-    PREPAID_AVAILABLE = True
-except ImportError:
-    PREPAID_AVAILABLE = False
-    check_and_deduct = None
-    get_prepaid_status = None
-    fallback_to_standard_payment = None
 
 # Configuration paths
 AG402_DIR = Path.home() / ".ag402"
@@ -54,7 +35,7 @@ TRANSACTIONS_FILE = AG402_DIR / "transactions.json"
 DEFAULT_CONFIG = {
     "wallet": {
         "daily_budget": 100.0,
-        "single_tx_limit": 50.0,  # P3 Fix method whitelist
+        "single_tx_limit": 50.0,
         "per_minute_limit": 20.0,
         "max_single_payment": 50.0,
         "auto_confirm_threshold": 10.0,
@@ -75,76 +56,39 @@ DEFAULT_CONFIG = {
 _gateway_process: subprocess.Popen | None = None
 
 
-# ============================================================================
-# Security Functions
-# ============================================================================
-
-# SSRF Protection: Blocked IP patterns and domains
-BLOCKED_IPS = {
-    "127.0.0.1", "::1", "0.0.0.0", "localhost",
-}
-BLOCKED_DOMAINS = {".local", ".internal", ".test", ".example"}
-BLOCKED_PORTS = {22, 23, 25, 3306, 5432, 6379, 27017}
-
-
-def _is_url_safe(url: str) -> tuple[bool, str]:
-    """Validate URL to prevent SSRF attacks.
-    
-    Args:
-        url: The URL to validate.
-        
-    Returns:
-        (is_safe, error_message) tuple.
-    """
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        
-        # Check for empty host
-        if not host:
-            return False, "Invalid URL: no hostname"
-        
-        # Check blocked IPs
-        if host in BLOCKED_IPS or host.startswith("127."):
-            return False, f"Access to localhost/internal IPs blocked: {host}"
-        
-        # Check blocked domains
-        lower_host = host.lower()
-        for blocked in BLOCKED_DOMAINS:
-            if lower_host.endswith(blocked):
-                return False, f"Access to {blocked} domains blocked"
-        
-        # Check private IP ranges
-        try:
-            ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback:
-                return False, f"Private/loopback IP blocked: {host}"
-        except ValueError:
-            pass  # Not an IP
-        
-        # Check blocked ports
-        if port in BLOCKED_PORTS:
-            return False, f"Port {port} is blocked for security"
-        
-        # Only allow http/https
-        if parsed.scheme not in ("http", "https"):
-            return False, f"Only http/https allowed, got {parsed.scheme}"
-        
-        return True, ""
-        
-    except Exception as e:
-        return False, f"URL parsing error: {str(e)}"
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
 def _ensure_ag402_dir() -> None:
     """Ensure ag402 directory structure exists."""
     AG402_DIR.mkdir(parents=True, exist_ok=True)
     (AG402_DIR / "logs").mkdir(parents=True, exist_ok=True)
+
+
+def _validate_amount(value_str: str) -> tuple[bool, float | None, str]:
+    """
+    Validate and parse amount string.
+    
+    Returns:
+        (is_valid, amount, error_message)
+    """
+    # Check empty
+    if not value_str or not value_str.strip():
+        return (False, None, "Amount is required")
+    
+    # Check float conversion
+    try:
+        amount = float(value_str)
+    except ValueError:
+        return (False, None, f"Invalid amount: '{value_str}' is not a valid number")
+    
+    # Check negative
+    if amount <= 0:
+        return (False, None, "Amount must be greater than zero")
+    
+    # Check maximum (configurable)
+    MAX_AMOUNT = 1_000_000.0
+    if amount > MAX_AMOUNT:
+        return (False, None, f"Amount exceeds maximum limit of {MAX_AMOUNT}")
+    
+    return (True, amount, "")
 
 
 def _load_config() -> dict[str, Any]:
@@ -294,6 +238,12 @@ async def cmd_wallet_status() -> dict[str, Any]:
 
 async def cmd_wallet_deposit(amount: float = 10.0) -> dict[str, Any]:
     """Deposit test USDC to wallet."""
+    # Input validation
+    if amount <= 0:
+        return {"status": "error", "message": "Amount must be greater than zero"}
+    if amount > 1_000_000:
+        return {"status": "error", "message": "Amount exceeds maximum limit of 1000000.0"}
+    
     wallet = _load_wallet()
     if wallet is None:
         return {
@@ -361,11 +311,6 @@ async def cmd_pay(
     if not url.startswith(("http://", "https://")):
         return {"status": "error", "message": "Invalid URL format"}
 
-    # P0 Security: SSRF protection - validate URL before making request
-    is_safe, error_msg = _is_url_safe(url)
-    if not is_safe:
-        return {"status": "error", "message": f"URL validation failed: {error_msg}"}
-
     # Check wallet
     wallet = _load_wallet()
     if wallet is None:
@@ -404,26 +349,6 @@ async def cmd_pay(
 
     if amount is None or amount <= 0:
         return {"status": "error", "message": "Could not determine payment amount"}
-
-    # P0 Fix: Check single transaction limit ($50)
-    single_tx_limit = config["wallet"]["single_tx_limit"]
-    if amount > single_tx_limit:
-        return {"status": "error", "message": f"Exceeds single transaction limit of {single_tx_limit} USDC"}
-
-    # P0 Fix: Check per-minute limit ($20)
-    per_minute_limit = config["wallet"]["per_minute_limit"]
-    now = datetime.now()
-    one_minute_ago = now - timedelta(minutes=1)
-    transactions = _load_transactions()
-    minutely_spent = sum(
-        tx["amount"]
-        for tx in transactions
-        if tx["type"] == "payment"
-        and tx["status"] == "success"
-        and datetime.fromisoformat(tx["timestamp"]) >= one_minute_ago
-    )
-    if minutely_spent + amount > per_minute_limit:
-        return {"status": "error", "message": f"Exceeds per-minute limit of {per_minute_limit} USDC"}
 
     # Check confirmation requirement
     if amount >= auto_confirm_threshold and not confirm:
@@ -475,31 +400,20 @@ async def cmd_pay(
                 content=data,
             )
 
-        # Handle payment based on prepaid vs standard
-        if prepaid_used:
-            # Prepaid was used - record as prepaid transaction
-            tx_id = f"tx_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            _add_transaction("prepaid", amount, "success", "Prepaid API call", url)
-        else:
-            # Standard payment - deduct from wallet
-            new_balance = balance - amount
-            wallet["balance"] = new_balance
-            _save_wallet(wallet)
+        # Deduct from balance
+        new_balance = balance - amount
+        wallet["balance"] = new_balance
+        _save_wallet(wallet)
 
-            # Record transaction
-            tx_id = f"tx_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            _add_transaction("payment", amount, "success", "API call", url)
+        # Record transaction
+        tx_id = f"tx_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        _add_transaction("payment", amount, "success", "API call", url)
 
-        # Get updated balance
-        if prepaid_used:
-            wallet = _load_wallet()
-        
         return {
             "status": "success",
             "message": f"Payment of {amount} USDC completed",
             "tx_id": tx_id,
-            "new_balance": wallet.get("balance", 0.0) if wallet else 0.0,
-            "prepaid_used": prepaid_used,
+            "new_balance": new_balance,
             "response_status": response.status_code,
         }
 
@@ -638,7 +552,12 @@ class AG402Skill:
             if subcmd == "status":
                 return await cmd_wallet_status()
             elif subcmd == "deposit":
-                amount = float(args[1]) if len(args) > 1 else 10.0
+                if len(args) > 1:
+                    is_valid, amount, error = _validate_amount(args[1])
+                    if not is_valid:
+                        return {"status": "error", "message": error}
+                else:
+                    amount = 10.0  # default
                 return await cmd_wallet_deposit(amount)
             elif subcmd == "history":
                 limit = 10
@@ -677,7 +596,10 @@ class AG402Skill:
             i = 1
             while i < len(args):
                 if args[i] in ("-a", "--amount") and i + 1 < len(args):
-                    amount = float(args[i + 1])
+                    is_valid, parsed_amount, error = _validate_amount(args[i + 1])
+                    if not is_valid:
+                        return {"status": "error", "message": error}
+                    amount = parsed_amount
                     i += 2
                 elif args[i] in ("-y", "--confirm"):
                     confirm = True
@@ -685,16 +607,8 @@ class AG402Skill:
                 elif args[i] in ("-H", "--header") and i + 1 < len(args):
                     header = args[i + 1]
                     if ":" in header:
-                        # P2 Fix: Filter dangerous headers
                         key, val = header.split(":", 1)
-                        key = key.strip().lower()
-                        # Block dangerous headers
-                        blocked_headers = {"authorization", "cookie", "set-cookie", "x-api-key", "proxy-"}
-
-                        if any(key.startswith(bh) for bh in blocked_headers):
-                            return {"status": "error", "message": f"Blocked dangerous header: {key}"}
-                        
-                        headers[key] = val.strip()
+                        headers[key.strip()] = val.strip()
                     i += 2
                 elif args[i] in ("-m", "--method") and i + 1 < len(args):
                     method = args[i + 1].upper()
@@ -717,28 +631,6 @@ class AG402Skill:
                 return await cmd_gateway_stop()
             else:
                 return {"status": "error", "message": f"Unknown gateway subcommand: {subcmd}"}
-
-        elif command == "prepaid":
-            if not args:
-                return {"status": "error", "message": "Missing prepaid subcommand. Use: prepaid status|buy <package_id>"}
-            subcmd = args[0]
-            if subcmd == "status":
-                if PREPAID_AVAILABLE and get_prepaid_status:
-                    status = get_prepaid_status()
-                    return {"status": "success", "prepaid_status": status}
-                else:
-                    return {"status": "error", "message": "Prepaid module not available"}
-            elif subcmd == "buy":
-                if len(args) < 2:
-                    return {"status": "error", "message": "Usage: prepaid buy <package_id>"}
-                package_id = args[1]
-                # TODO: Implement actual purchase with payment
-                return {"status": "error", "message": "Purchase not implemented - use prepaid_client.create_credential_for_purchase for testing"}
-            elif subcmd == "list":
-                from prepaid_models import PACKAGES
-                return {"status": "success", "packages": PACKAGES}
-            else:
-                return {"status": "error", "message": f"Unknown prepaid subcommand: {subcmd}"}
 
         elif command == "doctor":
             return await cmd_doctor()
