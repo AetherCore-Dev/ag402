@@ -14,11 +14,14 @@ Provides commands for:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -168,6 +171,133 @@ def _add_transaction(
 
 
 # ============================================================================
+# SSRF Protection Functions
+# ============================================================================
+
+
+def _normalize_ip(ip_str: str) -> str | None:
+    """
+    将各种格式的 IP 地址转换为标准 IPv4/IPv6 字符串。
+    支持: 十进制 (2130706433), 十六进制 (0x7F000001), 标准格式 (127.0.0.1)
+    """
+    ip_str = ip_str.strip()
+
+    # 尝试直接解析为 IP
+    try:
+        return str(ipaddress.ip_address(ip_str))
+    except ValueError:
+        pass
+
+    # 尝试十进制格式
+    if ip_str.isdigit():
+        try:
+            return str(ipaddress.ip_address(int(ip_str)))
+        except ValueError:
+            pass
+
+    # 尝试十六进制格式 (0x...)
+    if ip_str.startswith("0x") or ip_str.startswith("0X"):
+        try:
+            return str(ipaddress.ip_address(int(ip_str, 16)))
+        except ValueError:
+            pass
+
+    return None
+
+
+def _is_private_ip(ip_str: str) -> bool:
+    """
+_private_ip(ip_str    检查 IP 是否为私有/保留地址。
+    包括: 127.x.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, ::1, link-local 等
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+    except ValueError:
+        return True  # 无法解析视为不安全
+
+
+def _resolve_hostname(hostname: str) -> list[str]:
+    """
+    解析主机名到 IP 地址列表。
+    """
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+        return list(set(info[4][0] for info in addr_info))
+    except socket.gaierror:
+        return []
+
+
+def _is_url_safe(url: str) -> tuple[bool, str]:
+    """
+    验证 URL 是否安全 (不触发 SSRF)。
+
+    Returns:
+        (is_safe, error_message)
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return (False, "Invalid URL format")
+
+    # 1. 强制 HTTPS
+    if parsed.scheme != "https":
+        return (False, "Only HTTPS URLs are allowed")
+
+    # 2. 检查 host 存在
+    if not parsed.netloc:
+        return (False, "Missing host in URL")
+
+    # 提取 host (处理 IPv6 格式 [::1])
+    raw_host = parsed.netloc
+    
+    # 处理 IPv6 格式: [::1] 或 [::1]:port
+    if raw_host.startswith("["):
+        # 找到对应的结束括号
+        bracket_end = raw_host.find("]")
+        if bracket_end == -1:
+            return (False, "Invalid IPv6 format")
+        host = raw_host[1:bracket_end]
+    else:
+        # 普通 host，可能带端口
+        host = raw_host.split(":")[0]
+
+    # 3. 解码 URL 编码 (处理 %2F 等)
+    try:
+        host = urllib.parse.unquote(host)
+    except Exception:
+        pass
+
+    # 4. 检查 IPv6 格式 [::1] 并提取
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]  # 去掉方括号
+
+    # 5. 移除 Basic Auth (user:pass@host) - 检查原始 netloc
+    if "@" in parsed.netloc:
+        return (False, "URL with credentials not allowed")
+
+    # 6. 标准化 IP 地址
+    normalized_ip = _normalize_ip(host)
+    if normalized_ip:
+        # Host 是 IP 地址
+        if _is_private_ip(normalized_ip):
+            return (False, f"Private IP not allowed: {normalized_ip}")
+        return (True, "")
+
+    # 7. Host 是域名 - 解析并验证
+    ips = _resolve_hostname(host)
+    if not ips:
+        return (False, f"Cannot resolve hostname: {host}")
+
+    # 8. 检查所有解析出的 IP
+    for ip in ips:
+        if _is_private_ip(ip):
+            return (False, f"Hostname resolves to private IP: {ip}")
+
+    return (True, "")
+
+
+# ============================================================================
 # Command Implementations
 # ============================================================================
 
@@ -308,6 +438,13 @@ async def cmd_pay(
     if not url:
         return {"status": "error", "message": "URL is required"}
 
+    # 新增: SSRF 安全检查
+    is_safe, error_msg = _is_url_safe(url)
+    if not is_safe:
+        _add_transaction("payment", 0, "failed", f"URL blocked: {error_msg}", url)
+        return {"status": "error", "message": f"URL not allowed: {error_msg}"}
+
+    # 原有验证可以保留作为后备
     if not url.startswith(("http://", "https://")):
         return {"status": "error", "message": "Invalid URL format"}
 
