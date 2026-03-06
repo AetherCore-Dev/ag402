@@ -14,19 +14,101 @@ Provides commands for:
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import io
 import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
 import urllib.parse
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+# ============================================================================
+# Security: Header Whitelist
+# ============================================================================
+
+ALLOWED_HEADERS = frozenset({
+    "accept",
+    "content-type",
+    "user-agent",
+    "accept-language",
+    "accept-encoding",
+})
+
+# ============================================================================
+# Authentication Helpers
+# ============================================================================
+
+def _require_auth(func):
+    """Decorator to require API_KEY authentication for sensitive commands."""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Get API key from config or environment
+        config = _load_config()
+        api_key = config.get("api_key") or os.environ.get("AG402_API_KEY")
+        
+        if not api_key:
+            return {"status": "error", "code": 401, "message": "Authentication required: No API_KEY configured"}
+        
+        # Check Authorization header or API_KEY env var
+        auth_header = kwargs.get("auth_header")
+        if auth_header:
+            # Support "Bearer <token>" format
+            if auth_header.startswith("Bearer "):
+                provided_key = auth_header[7:]
+            else:
+                provided_key = auth_header
+                
+            if provided_key != api_key:
+                return {"status": "error", "code": 401, "message": "Invalid API_KEY"}
+        else:
+            return {"status": "error", "code": 401, "message": "Authentication required: Provide API_KEY via Authorization header or AG402_API_KEY env var"}
+        
+        return await func(*args, **kwargs)
+    return wrapper
+
+
+# ============================================================================
+# File Locking Helpers (for concurrency safety)
+# ============================================================================
+
+def _acquire_lock(lock_file: Path, exclusive: bool = True) -> io.IOBase:
+    """Acquire file lock. Returns file handle to keep lock alive."""
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = open(lock_file, 'w')
+    lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    fcntl.flock(lock_handle.fileno(), lock_type)
+    return lock_handle
+
+
+def _release_lock(lock_handle: io.IOBase) -> None:
+    """Release file lock."""
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    lock_handle.close()
+
+
+def _validate_headers(headers: dict[str, str]) -> tuple[bool, str]:
+    """Validate headers against whitelist."""
+    if not headers:
+        return (True, "")
+    
+    for key in headers.keys():
+        if key.lower() not in ALLOWED_HEADERS:
+            return (False, f"Header '{key}' is not allowed")
+        # Additional validation: no control characters
+        if any(ord(c) < 32 for c in key) or any(ord(c) < 32 for c in headers[key]):
+            return (False, f"Header contains invalid characters")
+    return (True, "")
+
 
 # Configuration paths
 AG402_DIR = Path.home() / ".ag402"
@@ -53,6 +135,7 @@ DEFAULT_CONFIG = {
         "file": str(AG402_DIR / "logs" / "payments.log"),
     },
     "test_mode": True,
+    "api_key": None,  # Generated on first setup
 }
 
 # Gateway process reference
@@ -111,39 +194,65 @@ def _save_config(config: dict[str, Any]) -> None:
 
 
 def _load_wallet() -> dict[str, Any] | None:
-    """Load wallet data."""
+    """Load wallet data with file locking."""
     if not WALLET_FILE.exists():
         return None
+    lock_file = WALLET_FILE.with_suffix(".lock")
+    lock_handle = None
     try:
+        lock_handle = _acquire_lock(lock_file, exclusive=False)
         with open(WALLET_FILE) as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
         return None
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
 
 def _save_wallet(wallet: dict[str, Any]) -> None:
-    """Save wallet data."""
+    """Save wallet data with file locking."""
     _ensure_ag402_dir()
-    with open(WALLET_FILE, "w") as f:
-        json.dump(wallet, f, indent=2)
+    lock_file = WALLET_FILE.with_suffix(".lock")
+    lock_handle = None
+    try:
+        lock_handle = _acquire_lock(lock_file, exclusive=True)
+        with open(WALLET_FILE, "w") as f:
+            json.dump(wallet, f, indent=2)
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
 
 def _load_transactions() -> list[dict[str, Any]]:
-    """Load transaction history."""
+    """Load transaction history with file locking."""
     if not TRANSACTIONS_FILE.exists():
         return []
+    lock_file = TRANSACTIONS_FILE.with_suffix(".lock")
+    lock_handle = None
     try:
+        lock_handle = _acquire_lock(lock_file, exclusive=False)
         with open(TRANSACTIONS_FILE) as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
         return []
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
 
 def _save_transactions(transactions: list[dict[str, Any]]) -> None:
-    """Save transaction history."""
+    """Save transaction history with file locking."""
     _ensure_ag402_dir()
-    with open(TRANSACTIONS_FILE, "w") as f:
-        json.dump(transactions, f, indent=2)
+    lock_file = TRANSACTIONS_FILE.with_suffix(".lock")
+    lock_handle = None
+    try:
+        lock_handle = _acquire_lock(lock_file, exclusive=True)
+        with open(TRANSACTIONS_FILE, "w") as f:
+            json.dump(transactions, f, indent=2)
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
 
 def _add_transaction(
@@ -302,13 +411,17 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
 # ============================================================================
 
 
-async def cmd_setup() -> dict[str, Any]:
+async def cmd_setup(auth_header: str | None = None) -> dict[str, Any]:
     """Setup/install ag402 - initialize config and wallet."""
     _ensure_ag402_dir()
 
-    # Create default config if not exists
-    if not CONFIG_FILE.exists():
-        _save_config(DEFAULT_CONFIG)
+    # Load or create config
+    config = _load_config()
+    
+    # Generate API key if not exists
+    if not config.get("api_key"):
+        config["api_key"] = secrets.token_hex(32)
+        _save_config(config)
 
     # Create test wallet if not exists
     wallet = _load_wallet()
@@ -327,7 +440,8 @@ async def cmd_setup() -> dict[str, Any]:
         "message": "ag402 initialized successfully",
         "wallet_address": wallet.get("address"),
         "balance": wallet.get("balance"),
-        "config": _load_config(),
+        "api_key": config["api_key"],
+        "api_key_hint": "Use 'Authorization: Bearer <api_key>' header or set AG402_API_KEY env var",
     }
 
 
@@ -366,7 +480,11 @@ async def cmd_wallet_status() -> dict[str, Any]:
     }
 
 
-async def cmd_wallet_deposit(amount: float = 10.0) -> dict[str, Any]:
+@_require_auth
+async def cmd_wallet_deposit(
+    amount: float = 10.0,
+    auth_header: str | None = None,
+) -> dict[str, Any]:
     """Deposit test USDC to wallet."""
     # Input validation
     if amount <= 0:
@@ -374,20 +492,30 @@ async def cmd_wallet_deposit(amount: float = 10.0) -> dict[str, Any]:
     if amount > 1_000_000:
         return {"status": "error", "message": "Amount exceeds maximum limit of 1000000.0"}
     
-    wallet = _load_wallet()
-    if wallet is None:
-        return {
-            "status": "error",
-            "message": "Wallet not initialized. Run 'setup' first.",
-        }
+    # Use lock for atomic operation
+    lock_file = WALLET_FILE.with_suffix(".lock")
+    lock_handle = None
+    try:
+        lock_handle = _acquire_lock(lock_file, exclusive=True)
+        
+        wallet = _load_wallet()
+        if wallet is None:
+            return {
+                "status": "error",
+                "message": "Wallet not initialized. Run 'setup' first.",
+            }
 
-    # Add to balance
-    new_balance = wallet.get("balance", 0.0) + amount
-    wallet["balance"] = new_balance
-    _save_wallet(wallet)
+        # Add to balance
+        new_balance = wallet.get("balance", 0.0) + amount
+        wallet["balance"] = new_balance
+        _save_wallet(wallet)
 
-    # Record transaction
-    _add_transaction("deposit", amount, "success", "Test deposit")
+        # Record transaction
+        _add_transaction("deposit", amount, "success", "Test deposit")
+        
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
     return {
         "status": "success",
@@ -425,6 +553,7 @@ async def cmd_wallet_history(
     }
 
 
+@_require_auth
 async def cmd_pay(
     url: str,
     amount: float | None = None,
@@ -432,11 +561,19 @@ async def cmd_pay(
     headers: dict[str, str] | None = None,
     method: str = "GET",
     data: str | None = None,
+    auth_header: str | None = None,
 ) -> dict[str, Any]:
     """Make payment to a URL."""
     # Validate URL
     if not url:
         return {"status": "error", "message": "URL is required"}
+
+    # Validate headers against whitelist
+    if headers:
+        is_valid, error_msg = _validate_headers(headers)
+        if not is_valid:
+            _add_transaction("payment", 0, "failed", f"Header blocked: {error_msg}", url)
+            return {"status": "error", "message": f"Header validation failed: {error_msg}"}
 
     # 新增: SSRF 安全检查
     is_safe, error_msg = _is_url_safe(url)
@@ -448,17 +585,92 @@ async def cmd_pay(
     if not url.startswith(("http://", "https://")):
         return {"status": "error", "message": "Invalid URL format"}
 
-    # Check wallet
-    wallet = _load_wallet()
-    if wallet is None:
-        return {"status": "error", "message": "Wallet not initialized"}
+    # Use file lock for atomic balance operations
+    lock_file = WALLET_FILE.with_suffix(".lock")
+    lock_handle = None
+    try:
+        lock_handle = _acquire_lock(lock_file, exclusive=True)
+        
+        # Check wallet (now locked)
+        wallet = _load_wallet()
+        if wallet is None:
+            return {"status": "error", "message": "Wallet not initialized"}
 
-    config = _load_config()
-    auto_confirm_threshold = config["wallet"]["auto_confirm_threshold"]
+        config = _load_config()
+        auto_confirm_threshold = config["wallet"]["auto_confirm_threshold"]
 
-    # If amount not specified, try to detect from 402 response
-    if amount is None:
-        # Make a test request to get the payment amount
+        # If amount not specified, try to detect from 402 response
+        if amount is None:
+            # Make a test request to get the payment amount
+            try:
+                async with httpx.AsyncClient(timeout=config["network"]["timeout"]) as client:
+                    response = await client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        content=data,
+                    )
+                    if response.status_code == 402:
+                        # Extract amount from x402 header
+                        payment_info = response.headers.get("x402-payment", "{}")
+                        try:
+                            payment_data = json.loads(payment_info)
+                            amount = payment_data.get("amount", 0.0)
+                        except json.JSONDecodeError:
+                            amount = 0.0
+                    else:
+                        return {
+                            "status": "success",
+                            "message": "Request successful (no payment required)",
+                            "status_code": response.status_code,
+                        }
+            except Exception as e:
+                return {"status": "error", "message": f"Network error: {str(e)}"}
+
+        if amount is None or amount <= 0:
+            return {"status": "error", "message": "Could not determine payment amount"}
+
+        # Check confirmation requirement
+        if amount >= auto_confirm_threshold and not confirm:
+            return {
+                "status": "confirm_required",
+                "message": f"Payment of {amount} USDC requires confirmation",
+                "amount": amount,
+                "url": url,
+            }
+
+        # Check balance (still locked)
+        balance = wallet.get("balance", 0.0)
+        if balance < amount:
+            _add_transaction("payment", amount, "failed", "Insufficient balance", url)
+            return {
+                "status": "error",
+                "message": "Insufficient balance",
+                "current_balance": balance,
+                "required_amount": amount,
+            }
+
+        # Check budget (still locked)
+        today = datetime.now().date()
+        transactions = _load_transactions()
+        daily_spent = sum(
+            tx["amount"]
+            for tx in transactions
+            if tx["type"] == "payment"
+            and tx["status"] == "success"
+            and datetime.fromisoformat(tx["timestamp"]).date() == today
+        )
+        daily_budget = config["wallet"]["daily_budget"]
+        if daily_spent + amount > daily_budget:
+            _add_transaction("payment", amount, "failed", "Exceeds daily budget", url)
+            return {
+                "status": "error",
+                "message": "Exceeds daily budget",
+                "daily_budget": daily_budget,
+                "daily_spent": daily_spent,
+            }
+
+        # Make the payment (still locked)
         try:
             async with httpx.AsyncClient(timeout=config["network"]["timeout"]) as client:
                 response = await client.request(
@@ -467,99 +679,35 @@ async def cmd_pay(
                     headers=headers,
                     content=data,
                 )
-                if response.status_code == 402:
-                    # Extract amount from x402 header
-                    payment_info = response.headers.get("x402-payment", "{}")
-                    try:
-                        payment_data = json.loads(payment_info)
-                        amount = payment_data.get("amount", 0.0)
-                    except json.JSONDecodeError:
-                        amount = 0.0
-                else:
-                    return {
-                        "status": "success",
-                        "message": "Request successful (no payment required)",
-                        "status_code": response.status_code,
-                    }
+
+            # Deduct from balance (still locked - atomic!)
+            new_balance = balance - amount
+            wallet["balance"] = new_balance
+            _save_wallet(wallet)
+
+            # Record transaction
+            tx_id = f"tx_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            _add_transaction("payment", amount, "success", "API call", url)
+
+            return {
+                "status": "success",
+                "message": f"Payment of {amount} USDC completed",
+                "tx_id": tx_id,
+                "new_balance": new_balance,
+                "response_status": response.status_code,
+            }
+
         except Exception as e:
-            return {"status": "error", "message": f"Network error: {str(e)}"}
-
-    if amount is None or amount <= 0:
-        return {"status": "error", "message": "Could not determine payment amount"}
-
-    # Check confirmation requirement
-    if amount >= auto_confirm_threshold and not confirm:
-        return {
-            "status": "confirm_required",
-            "message": f"Payment of {amount} USDC requires confirmation",
-            "amount": amount,
-            "url": url,
-        }
-
-    # Check balance
-    balance = wallet.get("balance", 0.0)
-    if balance < amount:
-        _add_transaction("payment", amount, "failed", "Insufficient balance", url)
-        return {
-            "status": "error",
-            "message": "Insufficient balance",
-            "current_balance": balance,
-            "required_amount": amount,
-        }
-
-    # Check budget
-    today = datetime.now().date()
-    transactions = _load_transactions()
-    daily_spent = sum(
-        tx["amount"]
-        for tx in transactions
-        if tx["type"] == "payment"
-        and tx["status"] == "success"
-        and datetime.fromisoformat(tx["timestamp"]).date() == today
-    )
-    daily_budget = config["wallet"]["daily_budget"]
-    if daily_spent + amount > daily_budget:
-        _add_transaction("payment", amount, "failed", "Exceeds daily budget", url)
-        return {
-            "status": "error",
-            "message": "Exceeds daily budget",
-            "daily_budget": daily_budget,
-            "daily_spent": daily_spent,
-        }
-
-    # Make the payment (simulated for test mode)
-    try:
-        async with httpx.AsyncClient(timeout=config["network"]["timeout"]) as client:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                content=data,
-            )
-
-        # Deduct from balance
-        new_balance = balance - amount
-        wallet["balance"] = new_balance
-        _save_wallet(wallet)
-
-        # Record transaction
-        tx_id = f"tx_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        _add_transaction("payment", amount, "success", "API call", url)
-
-        return {
-            "status": "success",
-            "message": f"Payment of {amount} USDC completed",
-            "tx_id": tx_id,
-            "new_balance": new_balance,
-            "response_status": response.status_code,
-        }
-
-    except Exception as e:
-        _add_transaction("payment", amount, "failed", str(e), url)
-        return {"status": "error", "message": f"Payment failed: {str(e)}"}
+            _add_transaction("payment", amount, "failed", str(e), url)
+            return {"status": "error", "message": f"Payment failed: {str(e)}"}
+            
+    finally:
+        if lock_handle:
+            _release_lock(lock_handle)
 
 
-async def cmd_gateway_start() -> dict[str, Any]:
+@_require_auth
+async def cmd_gateway_start(auth_header: str | None = None) -> dict[str, Any]:
     """Start the ag402 gateway."""
     global _gateway_process
 
@@ -587,7 +735,8 @@ async def cmd_gateway_start() -> dict[str, Any]:
     return {"status": "success", "message": "Gateway started (mock mode)"}
 
 
-async def cmd_gateway_stop() -> dict[str, Any]:
+@_require_auth
+async def cmd_gateway_stop(auth_header: str | None = None) -> dict[str, Any]:
     """Stop the ag402 gateway."""
     global _gateway_process
 
@@ -666,18 +815,22 @@ class AG402Skill:
         self.name = "ag402"
         self.description = "AI Agent Payment Protocol - pay for API calls via HTTP 402"
 
-    async def execute(self, command: str, args: list[str] | None = None) -> dict[str, Any]:
+    async def execute(self, command: str, args: list[str] | None = None, **kwargs) -> dict[str, Any]:
         """Execute an ag402 command.
 
         Args:
             command: The command to execute
             args: Optional arguments for the command
+            **kwargs: Additional options (e.g., auth_header for API_KEY)
 
         Returns:
             Dict with command result
         """
         args = args or []
-
+        
+        # Extract auth header from kwargs (passed by OpenClaw skill system)
+        auth_header = kwargs.get("auth_header") or kwargs.get("authorization")
+        
         # Parse command and arguments
         if command == "setup":
             return await cmd_setup()
@@ -695,7 +848,7 @@ class AG402Skill:
                         return {"status": "error", "message": error}
                 else:
                     amount = 10.0  # default
-                return await cmd_wallet_deposit(amount)
+                return await cmd_wallet_deposit(amount, auth_header=auth_header)
             elif subcmd == "history":
                 limit = 10
                 tx_type = "all"
@@ -756,16 +909,16 @@ class AG402Skill:
                 else:
                     i += 1
 
-            return await cmd_pay(url, amount, confirm, headers, method, data)
+            return await cmd_pay(url, amount, confirm, headers, method, data, auth_header=auth_header)
 
         elif command == "gateway":
             if not args:
                 return {"status": "error", "message": "Missing gateway subcommand"}
             subcmd = args[0]
             if subcmd == "start":
-                return await cmd_gateway_start()
+                return await cmd_gateway_start(auth_header=auth_header)
             elif subcmd == "stop":
-                return await cmd_gateway_stop()
+                return await cmd_gateway_stop(auth_header=auth_header)
             else:
                 return {"status": "error", "message": f"Unknown gateway subcommand: {subcmd}"}
 
