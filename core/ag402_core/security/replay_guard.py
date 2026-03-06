@@ -144,14 +144,25 @@ class PersistentReplayGuard:
     async def init_db(self) -> None:
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except PermissionError as e:
+                raise PermissionError(
+                    f"Cannot create directory {db_dir} — permission denied. "
+                    f"Current user uid: {os.getuid()}, parent dir owner: {os.stat(os.path.dirname(db_dir)).st_uid}. "
+                    f"For Docker: ensure volume mount has correct ownership (chown -R {os.getuid()} {db_dir})"
+                ) from e
 
         # Pre-flight permission check: provide a clear error message instead of
         # the opaque sqlite3.OperationalError when the directory is not writable.
         if db_dir and os.path.isdir(db_dir) and not os.access(db_dir, os.W_OK):
+            stat_info = os.stat(db_dir)
             raise PermissionError(
                 f"Cannot write to {db_dir} — check directory permissions. "
-                f"Current user uid: {os.getuid()}, dir owner uid: {os.stat(db_dir).st_uid}"
+                f"Current user uid: {os.getuid()}, dir owner uid: {stat_info.st_uid}, "
+                f"dir mode: {oct(stat_info.st_mode)[-3:]}. "
+                f"For Docker: run 'docker exec <container> chown -R {os.getuid()} {db_dir}' "
+                f"or add 'user: \"{os.getuid()}:{os.getgid()}\"' to docker-compose.yml"
             )
 
         self._db = await aiosqlite.connect(self.db_path, timeout=10.0)

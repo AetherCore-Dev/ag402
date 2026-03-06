@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-03-06
+
+### Added
+
+- **ag402 OpenClaw Adapter**: Native OpenClaw Skill and bridge adapter
+  - Single-skill hybrid architecture (Skill + MCP tools)
+  - Auto-install scripts for easy setup
+  - Commands: setup, wallet status/deposit/history, pay, gateway start/stop, doctor
+  - OpenClaw bridge for mcporter integration
+
+### Security
+
+- **SSRF Protection**: Block localhost, private IPs, dangerous ports
+- **Race Condition Fix**: File locking with fcntl for atomic balance operations
+- **API Key Authentication**: AG402_API_KEY environment variable support
+- **Header Injection Prevention**: Block dangerous headers (authorization, cookie, x-api-key)
+- **HTTP Method Whitelist**: Only allow safe methods (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+- **Payment Confirmation**: $10 threshold for user confirmation
+- **Budget Limits**: $50 single / $20 min / $100 daily
+
+### Fixed
+
+- **Payment confirmation not called**: confirm_payment() now integrated in proxy_request()
+- **Daily limit reset**: BudgetState properly resets on new day
+- **Module imports**: Fixed __init__.py exports
+
+
 ## [0.1.10] - 2026-03-04
 
 ### Fixed

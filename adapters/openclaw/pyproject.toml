@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-openclaw"
-version = "0.1.9"
+version = "0.1.10"
 description = "Ag402 adapter for OpenClaw — automatic x402 payment via mcporter bridge"
 license = "MIT"
 requires-python = ">=3.10"

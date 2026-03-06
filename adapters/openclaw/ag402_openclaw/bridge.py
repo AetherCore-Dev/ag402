@@ -24,12 +24,233 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
+import ipaddress
 import json
 import logging
+import os
 import sys
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger("ag402_openclaw.bridge")
+
+
+# ============================================================================
+# Security Functions
+# ============================================================================
+
+# SSRF Protection: Blocked IP patterns and domains
+BLOCKED_IPS = {
+    "127.0.0.1", "::1", "0.0.0.0", "localhost",
+}
+BLOCKED_DOMAINS = {".local", ".internal", ".test", ".example"}
+BLOCKED_PORTS = {22, 23, 25, 3306, 5432, 6379, 27017}
+
+
+def _is_url_safe(url: str) -> tuple[bool, str]:
+    """Validate URL to prevent SSRF attacks.
+    
+    Args:
+        url: The URL to validate.
+        
+    Returns:
+        (is_safe, error_message) tuple.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        
+        # Check for empty host
+        if not host:
+            return False, "Invalid URL: no hostname"
+        
+        # Check blocked IPs
+        if host in BLOCKED_IPS or host.startswith("127."):
+            return False, f"Access to localhost/internal IPs blocked: {host}"
+        
+        # Check blocked domains
+        lower_host = host.lower()
+        for blocked in BLOCKED_DOMAINS:
+            if lower_host.endswith(blocked):
+                return False, f"Access to {blocked} domains blocked"
+        
+        # Check private IP ranges
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback:
+                return False, f"Private/loopback IP blocked: {host}"
+        except ValueError:
+            pass  # Not an IP
+        
+        # Check blocked ports
+        if port in BLOCKED_PORTS:
+            return False, f"Port {port} is blocked for security"
+        
+        # Only allow http/https
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Only http/https allowed, got {parsed.scheme}"
+        
+        return True, ""
+        
+    except Exception as e:
+        return False, f"URL parsing error: {str(e)}"
+
+
+# ============================================================================
+# Payment confirmation threshold
+# ============================================================================
+
+PAYMENT_CONFIRM_THRESHOLD = 10.0
+
+
+# ============================================================================
+# Budget State Management
+# ============================================================================
+
+class BudgetState:
+    """Track daily spending with automatic daily reset."""
+
+    def __init__(self) -> None:
+        self._daily_spend: float = 0.0
+        self._last_reset_date: date | None = None
+
+    def add_spend(self, amount: float) -> None:
+        """Add spending amount, resetting daily total if new day."""
+        today = datetime.now(timezone.utc).date()
+        if self._last_reset_date is None or today > self._last_reset_date:
+            # New day - reset daily spend
+            self._daily_spend = 0.0
+            self._last_reset_date = today
+        self._daily_spend += amount
+
+    def get_daily_spend(self) -> float:
+        """Get current daily spend, resetting if needed."""
+        today = datetime.now(timezone.utc).date()
+        if self._last_reset_date is None or today > self._last_reset_date:
+            self._daily_spend = 0.0
+            self._last_reset_date = today
+        return self._daily_spend
+
+
+# ============================================================================
+# Atomic Balance Operations
+# ============================================================================
+
+class AtomicBalance:
+    """Thread-safe balance operations using file locking."""
+    
+    def __init__(self, wallet_file: Path):
+        self._wallet_file = wallet_file
+        self._lock_file = wallet_file.with_suffix('.lock')
+    
+    def _acquire_lock(self, lock_fd) -> None:
+        """Acquire exclusive file lock."""
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    
+    def _release_lock(self, lock_fd) -> None:
+        """Release file lock."""
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    
+    def atomic_deduct(self, amount: float) -> tuple[bool, float, str]:
+        """Atomically deduct amount from balance.
+        
+        Returns:
+            (success, new_balance, error_message)
+        """
+        # Ensure directory exists
+        self._wallet_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Open lock file
+        lock_fd = os.open(str(self._lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            self._acquire_lock(lock_fd)
+            
+            # Read current balance
+            if self._wallet_file.exists():
+                with open(self._wallet_file) as f:
+                    wallet = json.load(f)
+            else:
+                wallet = {"balance": 0.0}
+            
+            current_balance = wallet.get("balance", 0.0)
+            
+            # Check sufficient balance
+            if current_balance < amount:
+                return False, current_balance, "Insufficient balance"
+            
+            # Deduct amount
+            new_balance = current_balance - amount
+            wallet["balance"] = new_balance
+            
+            # Write back atomically (write to temp, then rename)
+            temp_file = self._wallet_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(wallet, f)
+            os.replace(temp_file, self._wallet_file)
+            
+            return True, new_balance, ""
+            
+        finally:
+            self._release_lock(lock_fd)
+            os.close(lock_fd)
+    
+    def atomic_add(self, amount: float) -> tuple[bool, float]:
+        """Atomically add amount to balance.
+        
+        Returns:
+            (success, new_balance)
+        """
+        self._wallet_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        lock_fd = os.open(str(self._lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            self._acquire_lock(lock_fd)
+            
+            # Read current balance
+            if self._wallet_file.exists():
+                with open(self._wallet_file) as f:
+                    wallet = json.load(f)
+            else:
+                wallet = {"balance": 0.0}
+            
+            current_balance = wallet.get("balance", 0.0)
+            new_balance = current_balance + amount
+            wallet["balance"] = new_balance
+            
+            # Write back atomically
+            temp_file = self._wallet_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(wallet, f)
+            os.replace(temp_file, self._wallet_file)
+            
+            return True, new_balance
+            
+        finally:
+            self._release_lock(lock_fd)
+            os.close(lock_fd)
+
+
+def confirm_payment(amount: float) -> tuple[bool, str]:
+    """Confirm if payment should proceed based on $10 threshold.
+
+    Args:
+        amount: Payment amount in USD.
+
+    Returns:
+        (confirmed, error_message) tuple.
+    """
+    if amount > PAYMENT_CONFIRM_THRESHOLD:
+        logger.warning(
+            "[PAYMENT] Amount $%.2f exceeds $%.2f threshold - requires confirmation",
+            amount,
+            PAYMENT_CONFIRM_THRESHOLD,
+        )
+        return False, f"Amount ${amount} exceeds ${PAYMENT_CONFIRM_THRESHOLD} threshold, confirmation required"
+    return True, ""
 
 
 class OpenClawBridge:
@@ -44,6 +265,9 @@ class OpenClawBridge:
         self._wallet: Any = None
         self._initialized = False
         self._lock: asyncio.Lock | None = None
+        # Atomic balance operations
+        wallet_path = Path.home() / ".ag402" / "wallet.json"
+        self._atomic_balance = AtomicBalance(wallet_path)
 
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -107,7 +331,49 @@ class OpenClawBridge:
             Dict with status_code, body, headers, payment_made, amount_paid,
             tx_hash, and error fields.
         """
+        # P0 Security: SSRF protection - validate URL before making request
+        is_safe, error_msg = _is_url_safe(url)
+        if not is_safe:
+            logger.warning("[proxy] URL validation failed: %s", error_msg)
+            return {
+                "status_code": 400,
+                "body": "",
+                "headers": {},
+                "payment_made": False,
+                "amount_paid": 0.0,
+                "tx_hash": "",
+                "error": f"URL validation failed: {error_msg}",
+            }
+
         await self.ensure_initialized()
+
+        # P1 Fix: API key authentication
+        if API_KEY:
+            request_api_key = headers.get("x-api-key") if headers else None
+            if request_api_key != API_KEY:
+                return {
+                    "status_code": 401,
+                    "body": "",
+                    "headers": {},
+                    "payment_made": False,
+                    "amount_paid": 0.0,
+                    "tx_hash": "",
+                    "error": "Unauthorized: Invalid API key",
+                }
+
+        # P0 Fix: Check $10 confirmation threshold before payment
+        if max_amount is not None:
+            confirmed, error_msg = confirm_payment(max_amount)
+            if not confirmed:
+                return {
+                    "status_code": 402,
+                    "body": "",
+                    "headers": {},
+                    "payment_made": False,
+                    "amount_paid": 0.0,
+                    "tx_hash": "",
+                    "error": error_msg,
+                }
 
         method = method.upper()
         body_bytes = body.encode("utf-8") if body else None
@@ -127,6 +393,12 @@ class OpenClawBridge:
                     body_text = result.body.decode("utf-8")
                 except UnicodeDecodeError:
                     body_text = f"<binary data, {len(result.body)} bytes>"
+
+            # P0 Security: Use atomic balance deduction for successful payments
+            if result.payment_made and result.amount_paid > 0:
+                success, new_balance, error = self._atomic_balance.atomic_deduct(result.amount_paid)
+                if not success:
+                    logger.warning("[proxy] Atomic balance deduction failed: %s", error)
 
             return {
                 "status_code": result.status_code,
