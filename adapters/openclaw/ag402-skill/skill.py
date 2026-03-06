@@ -366,23 +366,6 @@ async def cmd_pay(
     if not is_safe:
         return {"status": "error", "message": f"URL validation failed: {error_msg}"}
 
-    # P3 Fix: HTTP method whitelist validation
-    ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-    if method and method.upper() not in ALLOWED_METHODS:
-        return {"status": "error", "message": f"Invalid HTTP method: {method}. Allowed: {ALLOWED_METHODS}"}
-
-    # PREPAID: Try prepaid first if available
-    seller_address = urlparse(url).netloc.split(":")[0]
-    
-    prepaid_used = False
-    if PREPAID_AVAILABLE and check_and_deduct:
-        prepaid_success, credential = check_and_deduct(seller_address)
-        if prepaid_success and credential:
-            prepaid_used = True
-            if headers is None:
-                headers = {}
-            headers["X-Prepaid-Credential"] = credential.to_header_value()
-
     # Check wallet
     wallet = _load_wallet()
     if wallet is None:
@@ -577,23 +560,6 @@ async def cmd_doctor() -> dict[str, Any]:
     checks.append({"name": "Config file", "status": "ok" if config_ok else "missing"})
     if not config_ok:
         issues.append("Config file not found")
-
-    # P3 Fix: HTTP method whitelist validation
-    ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-    if method and method.upper() not in ALLOWED_METHODS:
-        return {"status": "error", "message": f"Invalid HTTP method: {method}. Allowed: {ALLOWED_METHODS}"}
-
-    # PREPAID: Try prepaid first if available
-    seller_address = urlparse(url).netloc.split(":")[0]
-    
-    prepaid_used = False
-    if PREPAID_AVAILABLE and check_and_deduct:
-        prepaid_success, credential = check_and_deduct(seller_address)
-        if prepaid_success and credential:
-            prepaid_used = True
-            if headers is None:
-                headers = {}
-            headers["X-Prepaid-Credential"] = credential.to_header_value()
 
     # Check wallet
     wallet = _load_wallet()
