@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-03-08
+
+### Fixed
+
+- **CI Workflows**: Fix monorepo `pip install -e .` to install sub-packages (`protocol/`, `core/`, `adapters/`)
+- **CI Workflows**: Upgrade `semgrep-action` to container-based approach; upgrade `codeql-action` v3→v4; pin `scorecard-action` to v2.4.1
+- **CI Workflows**: Add required `security-events: write` and `id-token: write` permissions
+- **Lint F821**: Add module-level `API_KEY` variable in `bridge.py` (was undefined NameError)
+- **Lint SIM105**: Use `contextlib.suppress` in `solana_adapter.py`
+- **Lint SIM102**: Merge nested `if` statements in `prepaid_server.py`
+- **Lint B007**: Prefix unused loop variable with `_` in `challenge_validator.py`
+- **Semgrep**: Replace `urllib.request` with `socket` check in `setup_wizard.py`
+- **Lint W293**: Fix 35 whitespace-on-blank-line errors across openclaw adapter files
+- **Ruff config**: Add `N999` exemption for `ag402-skill` directory
+
 ## [0.1.13] - 2026-03-08
 
 ### Security
