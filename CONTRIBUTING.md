@@ -2,6 +2,18 @@
 
 Thank you for your interest in contributing to Ag402! This guide will help you get started.
 
+## Where to Start
+
+New here? Look for issues labeled **[`good first issue`](https://github.com/AetherCore-Dev/ag402/labels/good%20first%20issue)** — these are beginner-friendly tasks we've specifically prepared for new contributors. We also label **[`help wanted`](https://github.com/AetherCore-Dev/ag402/labels/help%20wanted)** for tasks where we'd especially appreciate community help.
+
+**Some ideas for first contributions:**
+- Add integration examples (`examples/langchain_agent.py`, `examples/crewai_agent.py`, etc.)
+- Improve error messages or documentation
+- Add test cases for edge scenarios
+- Fix typos or improve code comments
+
+Not sure where to start? Open a [Discussion](https://github.com/AetherCore-Dev/ag402/discussions) — we're happy to help you find a good task.
+
 ## Development Setup
 
 ### Prerequisites
@@ -90,6 +102,13 @@ adapters/openclaw/                    → OpenClaw bridge + skill + prepaid syst
 examples/                             → Demo scripts
 docs/                                 → Integration guides (Claude Code, Cursor, OpenClaw, localnet)
 ```
+
+## Community
+
+- [GitHub Discussions](https://github.com/AetherCore-Dev/ag402/discussions) — ask questions, share ideas, show what you've built
+- [Issue Tracker](https://github.com/AetherCore-Dev/ag402/issues) — bug reports, feature requests
+
+We value every contribution — code, docs, examples, bug reports, and feature ideas.
 
 ## Security
 

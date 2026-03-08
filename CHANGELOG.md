@@ -115,3 +115,8 @@ This release includes comprehensive security fixes identified through deep code 
 - `setup_wizard.py`: Added security reminder box and private-key-paste detection for seller role
 - `cli.py`: `ag402 serve` now prints seller security reminder on startup
 - `llms.txt`: Enhanced Sell Skill and added Red Flags section for LLM agents
+
+[0.1.14]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.13...v0.1.14
+[0.1.13]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.12...v0.1.13
+[0.1.12]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/AetherCore-Dev/ag402/releases/tag/v0.1.11
