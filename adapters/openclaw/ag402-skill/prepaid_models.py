@@ -3,11 +3,9 @@
 Defines prepaid package, credential, and usage log structures.
 """
 
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from typing import Optional
 import json
-
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 
 # Package definitions - 5 tiers
 PACKAGES = {
@@ -28,19 +26,19 @@ class PrepaidPackage:
     calls: int
     price: float
     created_at: datetime
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         data['created_at'] = self.created_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'PrepaidPackage':
         """Create from dictionary."""
         data['created_at'] = datetime.fromisoformat(data['created_at'])
         return cls(**data)
-    
+
     @classmethod
     def from_package_id(cls, package_id: str) -> 'PrepaidPackage':
         """Create package from package ID using PACKAGES definition."""
@@ -67,37 +65,37 @@ class PrepaidCredential:
     signature: str
     seller_address: str
     created_at: datetime
-    
+
     def is_valid(self) -> bool:
         """Check if credential is valid (not expired, has remaining calls)."""
         return self.remaining_calls > 0 and datetime.now() < self.expires_at
-    
+
     def is_expired(self) -> bool:
         """Check if credential is expired."""
         return datetime.now() >= self.expires_at
-    
+
     def has_calls(self) -> bool:
         """Check if credential has remaining calls."""
         return self.remaining_calls > 0
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         data['expires_at'] = self.expires_at.isoformat()
         data['created_at'] = self.created_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'PrepaidCredential':
         """Create from dictionary."""
         data['expires_at'] = datetime.fromisoformat(data['expires_at'])
         data['created_at'] = datetime.fromisoformat(data['created_at'])
         return cls(**data)
-    
+
     def to_header_value(self) -> str:
         """Convert to header value for X-Prepaid-Credential."""
         return json.dumps(self.to_dict())
-    
+
     @classmethod
     def from_header_value(cls, header_value: str) -> 'PrepaidCredential':
         """Create from header value."""
@@ -111,13 +109,13 @@ class UsageLog:
     called_at: datetime
     api_endpoint: str
     status: str  # success/failed
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         data['called_at'] = self.called_at.isoformat()
         return data
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'UsageLog':
         """Create from dictionary."""
@@ -131,7 +129,7 @@ def validate_package_id(package_id: str) -> bool:
     return package_id in PACKAGES
 
 
-def get_package_info(package_id: str) -> Optional[dict]:
+def get_package_info(package_id: str) -> dict | None:
     """Get package information by ID."""
     return PACKAGES.get(package_id)
 

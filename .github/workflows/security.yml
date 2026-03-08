@@ -6,20 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
+
       - name: Install dependencies
-        run: pip install -e .
-      
+        run: pip install -e protocol/ -e core/ -e "adapters/mcp/" -e "adapters/client_mcp/"
+
       - name: Run tests
         run: make test || pytest
 
@@ -28,24 +32,26 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
+
       - name: Install pip-audit
-        run: pip install pip-audit
-      
+        run: |
+          pip install -e protocol/ -e core/ -e "adapters/mcp/" -e "adapters/client_mcp/"
+          pip install pip-audit
+
       - name: Run pip-audit
-        run: pip-audit -r requirements.txt || true
+        run: pip-audit || true
 
   trivy:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Run Trivy
         uses: aquasecurity/trivy-action@master
         with:
@@ -53,17 +59,23 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-      
+
       - name: Upload results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
   semgrep:
     runs-on: ubuntu-latest
     needs: test
+    container:
+      image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
-      - uses: returntocorp/semgrep-action@v1
+      - run: semgrep scan --config auto --sarif --output=semgrep-results.sarif .
+      - name: Upload results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
-          config: auto
+          sarif_file: 'semgrep-results.sarif'

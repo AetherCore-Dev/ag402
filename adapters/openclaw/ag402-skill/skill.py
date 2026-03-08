@@ -14,12 +14,12 @@ Provides commands for:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import io
 import ipaddress
 import json
 import os
-import re
 import secrets
 import socket
 import subprocess
@@ -55,24 +55,21 @@ def _require_auth(func):
         # Get API key from config or environment
         config = _load_config()
         api_key = config.get("api_key") or os.environ.get("AG402_API_KEY")
-        
+
         if not api_key:
             return {"status": "error", "code": 401, "message": "Authentication required: No API_KEY configured"}
-        
+
         # Check Authorization header or API_KEY env var
         auth_header = kwargs.get("auth_header")
         if auth_header:
             # Support "Bearer <token>" format
-            if auth_header.startswith("Bearer "):
-                provided_key = auth_header[7:]
-            else:
-                provided_key = auth_header
-                
+            provided_key = auth_header[7:] if auth_header.startswith("Bearer ") else auth_header
+
             if provided_key != api_key:
                 return {"status": "error", "code": 401, "message": "Invalid API_KEY"}
         else:
             return {"status": "error", "code": 401, "message": "Authentication required: Provide API_KEY via Authorization header or AG402_API_KEY env var"}
-        
+
         return await func(*args, **kwargs)
     return wrapper
 
@@ -84,7 +81,7 @@ def _require_auth(func):
 def _acquire_lock(lock_file: Path, exclusive: bool = True) -> io.IOBase:
     """Acquire file lock. Returns file handle to keep lock alive."""
     lock_file.parent.mkdir(parents=True, exist_ok=True)
-    lock_handle = open(lock_file, 'w')
+    lock_handle = open(lock_file, 'w')  # noqa: SIM115  (intentional: lock handle must stay open)
     lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     fcntl.flock(lock_handle.fileno(), lock_type)
     return lock_handle
@@ -100,13 +97,13 @@ def _validate_headers(headers: dict[str, str]) -> tuple[bool, str]:
     """Validate headers against whitelist."""
     if not headers:
         return (True, "")
-    
-    for key in headers.keys():
+
+    for key in headers:
         if key.lower() not in ALLOWED_HEADERS:
             return (False, f"Header '{key}' is not allowed")
         # Additional validation: no control characters
         if any(ord(c) < 32 for c in key) or any(ord(c) < 32 for c in headers[key]):
-            return (False, f"Header contains invalid characters")
+            return (False, "Header contains invalid characters")
     return (True, "")
 
 
@@ -151,29 +148,29 @@ def _ensure_ag402_dir() -> None:
 def _validate_amount(value_str: str) -> tuple[bool, float | None, str]:
     """
     Validate and parse amount string.
-    
+
     Returns:
         (is_valid, amount, error_message)
     """
     # Check empty
     if not value_str or not value_str.strip():
         return (False, None, "Amount is required")
-    
+
     # Check float conversion
     try:
         amount = float(value_str)
     except ValueError:
         return (False, None, f"Invalid amount: '{value_str}' is not a valid number")
-    
+
     # Check negative
     if amount <= 0:
         return (False, None, "Amount must be greater than zero")
-    
+
     # Check maximum (configurable)
     MAX_AMOUNT = 1_000_000.0
     if amount > MAX_AMOUNT:
         return (False, None, f"Amount exceeds maximum limit of {MAX_AMOUNT}")
-    
+
     return (True, amount, "")
 
 
@@ -203,7 +200,7 @@ def _load_wallet() -> dict[str, Any] | None:
         lock_handle = _acquire_lock(lock_file, exclusive=False)
         with open(WALLET_FILE) as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return None
     finally:
         if lock_handle:
@@ -234,7 +231,7 @@ def _load_transactions() -> list[dict[str, Any]]:
         lock_handle = _acquire_lock(lock_file, exclusive=False)
         with open(TRANSACTIONS_FILE) as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return []
     finally:
         if lock_handle:
@@ -359,7 +356,7 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
 
     # 提取 host (处理 IPv6 格式 [::1])
     raw_host = parsed.netloc
-    
+
     # 处理 IPv6 格式: [::1] 或 [::1]:port
     if raw_host.startswith("["):
         # 找到对应的结束括号
@@ -372,10 +369,8 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
         host = raw_host.split(":")[0]
 
     # 3. 解码 URL 编码 (处理 %2F 等)
-    try:
+    with contextlib.suppress(Exception):
         host = urllib.parse.unquote(host)
-    except Exception:
-        pass
 
     # 4. 检查 IPv6 格式 [::1] 并提取
     if host.startswith("[") and host.endswith("]"):
@@ -417,7 +412,7 @@ async def cmd_setup(auth_header: str | None = None) -> dict[str, Any]:
 
     # Load or create config
     config = _load_config()
-    
+
     # Generate API key if not exists
     if not config.get("api_key"):
         config["api_key"] = secrets.token_hex(32)
@@ -491,13 +486,13 @@ async def cmd_wallet_deposit(
         return {"status": "error", "message": "Amount must be greater than zero"}
     if amount > 1_000_000:
         return {"status": "error", "message": "Amount exceeds maximum limit of 1000000.0"}
-    
+
     # Use lock for atomic operation
     lock_file = WALLET_FILE.with_suffix(".lock")
     lock_handle = None
     try:
         lock_handle = _acquire_lock(lock_file, exclusive=True)
-        
+
         wallet = _load_wallet()
         if wallet is None:
             return {
@@ -512,7 +507,7 @@ async def cmd_wallet_deposit(
 
         # Record transaction
         _add_transaction("deposit", amount, "success", "Test deposit")
-        
+
     finally:
         if lock_handle:
             _release_lock(lock_handle)
@@ -590,7 +585,7 @@ async def cmd_pay(
     lock_handle = None
     try:
         lock_handle = _acquire_lock(lock_file, exclusive=True)
-        
+
         # Check wallet (now locked)
         wallet = _load_wallet()
         if wallet is None:
@@ -700,7 +695,7 @@ async def cmd_pay(
         except Exception as e:
             _add_transaction("payment", amount, "failed", str(e), url)
             return {"status": "error", "message": f"Payment failed: {str(e)}"}
-            
+
     finally:
         if lock_handle:
             _release_lock(lock_handle)
@@ -728,7 +723,7 @@ async def cmd_gateway_start(auth_header: str | None = None) -> dict[str, Any]:
                 stderr=subprocess.PIPE,
             )
             return {"status": "success", "message": "Gateway started"}
-    except Exception as e:
+    except Exception:
         pass
 
     # If core not available, create a simple mock gateway
@@ -827,10 +822,10 @@ class AG402Skill:
             Dict with command result
         """
         args = args or []
-        
+
         # Extract auth header from kwargs (passed by OpenClaw skill system)
         auth_header = kwargs.get("auth_header") or kwargs.get("authorization")
-        
+
         # Parse command and arguments
         if command == "setup":
             return await cmd_setup()

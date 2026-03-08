@@ -116,7 +116,7 @@ class AgentRunner:
     def _create_sitecustomize(self) -> str:
         """Create a temporary directory with sitecustomize.py for injection."""
         self._tmpdir = tempfile.mkdtemp(prefix="ag402_")
-        os.chmod(self._tmpdir, 0o700)  # S2-2: restrict to owner only
+        os.chmod(self._tmpdir, 0o700)  # nosemgrep: insecure-file-permissions  (dir: owner-only is correct)
         sc_path = os.path.join(self._tmpdir, "sitecustomize.py")
         with open(sc_path, "w") as f:
             f.write(_SITECUSTOMIZE_CODE)

@@ -37,6 +37,8 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("ag402_openclaw.bridge")
 
+# API key authentication (set via AG402_API_KEY env var)
+API_KEY: str = os.environ.get("AG402_API_KEY", "")
 
 # ============================================================================
 # Security Functions
@@ -52,10 +54,10 @@ BLOCKED_PORTS = {22, 23, 25, 3306, 5432, 6379, 27017}
 
 def _is_url_safe(url: str) -> tuple[bool, str]:
     """Validate URL to prevent SSRF attacks.
-    
+
     Args:
         url: The URL to validate.
-        
+
     Returns:
         (is_safe, error_message) tuple.
     """
@@ -157,7 +159,7 @@ class AtomicBalance:
 
     def atomic_deduct(self, amount: float) -> tuple[bool, float, str]:
         """Atomically deduct amount from balance.
-        
+
         Returns:
             (success, new_balance, error_message)
         """
@@ -200,7 +202,7 @@ class AtomicBalance:
 
     def atomic_add(self, amount: float) -> tuple[bool, float]:
         """Atomically add amount to balance.
-        
+
         Returns:
             (success, new_balance)
         """

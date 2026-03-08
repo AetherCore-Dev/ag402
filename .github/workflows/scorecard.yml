@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '0 0 1 * *'  # 每月运行
+    - cron: '0 0 1 * *'  # Monthly
 
 jobs:
   scorecard:
@@ -11,17 +11,21 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      
+        with:
+          persist-credentials: false
+
       - name: Run OpenSSF Scorecard
-        uses: ossf/scorecard-action@v2
+        uses: ossf/scorecard-action@v2.4.1
         with:
           results_file: results.sarif.json
           results_format: sarif
           publish_results: true
-      
+
       - name: Upload to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
           sarif_file: results.sarif.json

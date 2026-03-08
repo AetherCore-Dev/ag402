@@ -444,9 +444,11 @@ def _print_network_prerequisites(network: str) -> None:
         print(f"  • Start validator:   {cyan('solana-test-validator --reset')}")
         # Non-blocking check: warn if validator not running
         try:
-            import urllib.request
-            req = urllib.request.Request("http://127.0.0.1:8899", method="HEAD")
-            urllib.request.urlopen(req, timeout=1)
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            sock.connect(("127.0.0.1", 8899))
+            sock.close()
         except Exception:
             print()
             print(f"  {yellow('⚠')} solana-test-validator does not appear to be running on localhost:8899")

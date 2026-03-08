@@ -6,10 +6,8 @@ Manages prepaid credentials: storage, retrieval, deduction, and fallback.
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from prepaid_models import PrepaidCredential, PACKAGES, calculate_expiry
-
+from prepaid_models import PrepaidCredential, calculate_expiry
 
 # Storage path
 PREPAID_DIR = Path.home() / ".ag402"
@@ -29,7 +27,7 @@ def _load_credentials() -> list[dict]:
     try:
         with open(CREDENTIALS_FILE) as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return []
 
 
@@ -53,10 +51,10 @@ def _save_credentials(credentials: list[dict]) -> None:
 
 def add_credential(credential: PrepaidCredential) -> bool:
     """Add a new credential to local storage.
-    
+
     Args:
         credential: PrepaidCredential to store
-        
+
     Returns:
         True if added successfully
     """
@@ -66,12 +64,12 @@ def add_credential(credential: PrepaidCredential) -> bool:
     return True
 
 
-def get_valid_credential(seller_address: str) -> Optional[PrepaidCredential]:
+def get_valid_credential(seller_address: str) -> PrepaidCredential | None:
     """Find a valid credential for a seller.
-    
+
     Args:
         seller_address: Seller's address to find credential for
-        
+
     Returns:
         Valid PrepaidCredential or None if not found/valid
     """
@@ -83,12 +81,12 @@ def get_valid_credential(seller_address: str) -> Optional[PrepaidCredential]:
     return None
 
 
-def deduct_call(seller_address: str) -> tuple[bool, Optional[PrepaidCredential]]:
+def deduct_call(seller_address: str) -> tuple[bool, PrepaidCredential | None]:
     """Deduct one call from valid credential.
-    
+
     Args:
         seller_address: Seller's address to deduct from
-        
+
     Returns:
         Tuple of (success, updated_credential). If success is False,
         no valid credential was found.
@@ -107,7 +105,7 @@ def deduct_call(seller_address: str) -> tuple[bool, Optional[PrepaidCredential]]
 
 def get_all_credentials() -> list[PrepaidCredential]:
     """Get all credentials (including expired/invalid).
-    
+
     Returns:
         List of all PrepaidCredential objects
     """
@@ -117,10 +115,10 @@ def get_all_credentials() -> list[PrepaidCredential]:
 
 def get_credentials_by_seller(seller_address: str) -> list[PrepaidCredential]:
     """Get all credentials for a specific seller.
-    
+
     Args:
         seller_address: Seller's address
-        
+
     Returns:
         List of PrepaidCredential for that seller
     """
@@ -135,17 +133,17 @@ def get_credentials_by_seller(seller_address: str) -> list[PrepaidCredential]:
 
 def remove_credential(buyer_address: str, seller_address: str) -> bool:
     """Remove credential for a buyer-seller pair.
-    
+
     Args:
         buyer_address: Buyer's address
         seller_address: Seller's address
-        
+
     Returns:
         True if credential was removed
     """
     credentials = _load_credentials()
-    new_creds = [c for c in credentials 
-                 if not (c['buyer_address'] == buyer_address and 
+    new_creds = [c for c in credentials
+                 if not (c['buyer_address'] == buyer_address and
                          c['seller_address'] == seller_address)]
     if len(new_creds) < len(credentials):
         _save_credentials(new_creds)
@@ -155,7 +153,7 @@ def remove_credential(buyer_address: str, seller_address: str) -> bool:
 
 def remove_invalid_credentials() -> int:
     """Remove all expired or depleted credentials.
-    
+
     Returns:
         Number of credentials removed
     """
@@ -173,15 +171,15 @@ def remove_invalid_credentials() -> int:
     return removed
 
 
-def check_and_deduct(seller_address: str) -> tuple[bool, Optional[PrepaidCredential]]:
+def check_and_deduct(seller_address: str) -> tuple[bool, PrepaidCredential | None]:
     """Check if valid credential exists and deduct call.
-    
+
     This is the main function to call before making API calls.
     Returns credential info for including in request header.
-    
+
     Args:
         seller_address: Seller's address
-        
+
     Returns:
         Tuple of (success, credential). If success is True,
         include credential in X-Prepaid-Credential header.
@@ -191,10 +189,10 @@ def check_and_deduct(seller_address: str) -> tuple[bool, Optional[PrepaidCredent
 
 def fallback_to_standard_payment(seller_address: str) -> dict:
     """Return info needed for standard 402 payment when prepaid unavailable.
-    
+
     Args:
         seller_address: Seller's address
-        
+
     Returns:
         Dict with fallback information
     """
@@ -207,14 +205,14 @@ def fallback_to_standard_payment(seller_address: str) -> dict:
 
 def get_prepaid_status() -> dict:
     """Get overall prepaid status for all credentials.
-    
+
     Returns:
         Dict with credential counts and total remaining calls
     """
     credentials = get_all_credentials()
     valid_creds = [c for c in credentials if c.is_valid()]
     total_calls = sum(c.remaining_calls for c in valid_creds)
-    
+
     # Group by seller
     by_seller = {}
     for cred in valid_creds:
@@ -225,7 +223,7 @@ def get_prepaid_status() -> dict:
             "remaining_calls": cred.remaining_calls,
             "expires_at": cred.expires_at.isoformat(),
         })
-    
+
     return {
         "total_credentials": len(credentials),
         "valid_credentials": len(valid_creds),
@@ -237,11 +235,11 @@ def get_prepaid_status() -> dict:
 def _compute_signature(buyer_address: str, package_id: str,
                            expires_at) -> str:
     """Compute HMAC-SHA256 signature for credential.
-    
+
     Note: Does NOT include calls count as it changes after each use.
     """
-    import hmac
     import hashlib
+    import hmac
     # In production, use seller's private key
     signing_key = "ag402_default_key_change_in_production"
     message = f"{buyer_address}|{package_id}|{expires_at.isoformat()}"
@@ -256,35 +254,35 @@ def create_credential_for_purchase(
     buyer_address: str,
     package_id: str,
     seller_address: str,
-    signature: Optional[str] = None,  # Make optional
+    signature: str | None = None,  # Make optional
 ) -> PrepaidCredential:
     """Create a new credential after purchase.
-    
+
     Args:
         buyer_address: Buyer's wallet address
         package_id: Package ID purchased
         seller_address: Seller's address
         signature: Seller's signature on the credential
-        
+
     Returns:
         New PrepaidCredential
     """
-    from prepaid_models import get_package_info, calculate_expiry
-    
+    from prepaid_models import get_package_info
+
     pkg_info = get_package_info(package_id)
     if not pkg_info:
         raise ValueError(f"Unknown package: {package_id}")
-    
+
     expires_at = calculate_expiry(pkg_info["days"])
-    
+
     # Auto-generate signature if not provided
     if signature is None:
         signature = _compute_signature(
-            buyer_address, 
-            package_id, 
+            buyer_address,
+            package_id,
             expires_at
         )
-    
+
     credential = PrepaidCredential(
         buyer_address=buyer_address,
         package_id=package_id,
@@ -294,6 +292,6 @@ def create_credential_for_purchase(
         seller_address=seller_address,
         created_at=datetime.now(),
     )
-    
+
     add_credential(credential)
     return credential

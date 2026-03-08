@@ -119,7 +119,7 @@ def validate_url_safety(url: str, *, allow_localhost: bool = False) -> Challenge
                     valid=False,
                     error=f"DNS resolution failed for '{hostname}': {exc}",
                 )
-            for family, _, _, _, sockaddr in addrs:
+            for _family, _, _, _, sockaddr in addrs:
                 resolved_ip = sockaddr[0]
                 try:
                     addr = ipaddress.ip_address(resolved_ip)

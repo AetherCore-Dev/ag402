@@ -488,7 +488,7 @@ def _cmd_run(args) -> None:
     if _is_python_command(cmd):
         tmpdir = tempfile.mkdtemp(prefix="ag402_")
         # S2-2 FIX: Restrict tmpdir permissions to owner-only (0o700)
-        os.chmod(tmpdir, 0o700)
+        os.chmod(tmpdir, 0o700)  # nosemgrep: insecure-file-permissions  (dir: owner-only is correct)
         sc_path = os.path.join(tmpdir, "sitecustomize.py")
         with open(sc_path, "w") as f:
             f.write(

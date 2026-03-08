@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 
@@ -572,10 +573,8 @@ class SolanaAdapter(BasePaymentProvider):
         import gc
 
         if self._client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.close()
-            except Exception:
-                pass
         self._keypair = None  # type: ignore[assignment]
         self._client = None  # type: ignore[assignment]
         gc.collect()
