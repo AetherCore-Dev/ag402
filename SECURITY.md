@@ -93,6 +93,23 @@ Total: **562+ tests** passing, 0 regressions.
 
 Total: **575+ tests** passing, 0 regressions.
 
+## V1.8 Security Fixes (v0.1.13, 2026-03-08)
+
+TDD-driven security hardening — 17 new tests written first (red), then code implemented (green):
+
+| ID | Severity | Fix |
+|----|----------|-----|
+| S1-1 | High | Private key removed from `os.environ`; stored in module-level variable with getter |
+| S1-2 | High | Mode-aware host binding: test→`127.0.0.1`, production→`0.0.0.0` |
+| S1-3 | Medium | Strict mock payment verification: only `.pay()`-recorded tx_hashes accepted |
+| S2-1 | Medium | `/health` endpoint returns minimal info in production (no target_url/metrics) |
+| S2-2 | Medium | Temp directory permissions enforced (`0o700`) in CLI runner and base runner |
+| B1 | Bug | `loop="asyncio"` for uvicorn across all entry points (macOS/Windows compatibility) |
+| B2 | Bug | ATA error detection with friendly messages in `SolanaAdapter.pay()` |
+| B3 | Bug | Improved ConfigError message with actionable guidance |
+
+Total: **588 tests** passing, 0 regressions.
+
 ## Responsible Disclosure
 
 We follow a responsible disclosure process. After a fix is available, we will:

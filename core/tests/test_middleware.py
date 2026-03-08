@@ -188,7 +188,6 @@ async def test_retry_failure_does_NOT_rollback(tmp_path):
 @pytest.mark.asyncio
 async def test_budget_guard_daily_limit(tmp_path):
     """Daily limit check prevents exceeding MAX_DAILY_SPEND."""
-    BudgetGuard.reset_circuit_breaker()
     wallet = await _make_wallet(tmp_path, balance=1000.0)
     config = _make_config(single_tx_limit=5.0)
     guard = BudgetGuard(wallet, config)

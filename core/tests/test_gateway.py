@@ -15,13 +15,19 @@ from ag402_core.payment.solana_adapter import MockSolanaAdapter
 
 @pytest.mark.asyncio
 async def test_verifier_with_provider() -> None:
-    """PaymentVerifier with a provider should call verify_payment."""
+    """PaymentVerifier with a provider should call verify_payment.
+
+    S1-3: Must use a tx_hash actually issued by the provider's .pay() method,
+    since arbitrary mock_tx_ prefixed hashes are no longer accepted.
+    """
     provider = MockSolanaAdapter()
+    # Create a real payment so the tx_hash is recorded
+    pay_result = await provider.pay("RecipientAddr", 0.01, "USDC")
     verifier = PaymentVerifier(provider=provider)
 
-    result = await verifier.verify("x402 mock_tx_hash_123")
+    result = await verifier.verify(f"x402 {pay_result.tx_hash}")
     assert result.valid is True
-    assert result.tx_hash == "mock_tx_hash_123"
+    assert result.tx_hash == pay_result.tx_hash
 
 
 @pytest.mark.asyncio

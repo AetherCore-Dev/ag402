@@ -63,21 +63,21 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
         parsed = urlparse(url)
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        
+
         # Check for empty host
         if not host:
             return False, "Invalid URL: no hostname"
-        
+
         # Check blocked IPs
         if host in BLOCKED_IPS or host.startswith("127."):
             return False, f"Access to localhost/internal IPs blocked: {host}"
-        
+
         # Check blocked domains
         lower_host = host.lower()
         for blocked in BLOCKED_DOMAINS:
             if lower_host.endswith(blocked):
                 return False, f"Access to {blocked} domains blocked"
-        
+
         # Check private IP ranges
         try:
             ip = ipaddress.ip_address(host)
@@ -85,17 +85,17 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
                 return False, f"Private/loopback IP blocked: {host}"
         except ValueError:
             pass  # Not an IP
-        
+
         # Check blocked ports
         if port in BLOCKED_PORTS:
             return False, f"Port {port} is blocked for security"
-        
+
         # Only allow http/https
         if parsed.scheme not in ("http", "https"):
             return False, f"Only http/https allowed, got {parsed.scheme}"
-        
+
         return True, ""
-        
+
     except Exception as e:
         return False, f"URL parsing error: {str(e)}"
 
@@ -142,19 +142,19 @@ class BudgetState:
 
 class AtomicBalance:
     """Thread-safe balance operations using file locking."""
-    
+
     def __init__(self, wallet_file: Path):
         self._wallet_file = wallet_file
         self._lock_file = wallet_file.with_suffix('.lock')
-    
+
     def _acquire_lock(self, lock_fd) -> None:
         """Acquire exclusive file lock."""
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-    
+
     def _release_lock(self, lock_fd) -> None:
         """Release file lock."""
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    
+
     def atomic_deduct(self, amount: float) -> tuple[bool, float, str]:
         """Atomically deduct amount from balance.
         
@@ -163,41 +163,41 @@ class AtomicBalance:
         """
         # Ensure directory exists
         self._wallet_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Open lock file
         lock_fd = os.open(str(self._lock_file), os.O_RDWR | os.O_CREAT, 0o644)
         try:
             self._acquire_lock(lock_fd)
-            
+
             # Read current balance
             if self._wallet_file.exists():
                 with open(self._wallet_file) as f:
                     wallet = json.load(f)
             else:
                 wallet = {"balance": 0.0}
-            
+
             current_balance = wallet.get("balance", 0.0)
-            
+
             # Check sufficient balance
             if current_balance < amount:
                 return False, current_balance, "Insufficient balance"
-            
+
             # Deduct amount
             new_balance = current_balance - amount
             wallet["balance"] = new_balance
-            
+
             # Write back atomically (write to temp, then rename)
             temp_file = self._wallet_file.with_suffix('.tmp')
             with open(temp_file, 'w') as f:
                 json.dump(wallet, f)
             os.replace(temp_file, self._wallet_file)
-            
+
             return True, new_balance, ""
-            
+
         finally:
             self._release_lock(lock_fd)
             os.close(lock_fd)
-    
+
     def atomic_add(self, amount: float) -> tuple[bool, float]:
         """Atomically add amount to balance.
         
@@ -205,30 +205,30 @@ class AtomicBalance:
             (success, new_balance)
         """
         self._wallet_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         lock_fd = os.open(str(self._lock_file), os.O_RDWR | os.O_CREAT, 0o644)
         try:
             self._acquire_lock(lock_fd)
-            
+
             # Read current balance
             if self._wallet_file.exists():
                 with open(self._wallet_file) as f:
                     wallet = json.load(f)
             else:
                 wallet = {"balance": 0.0}
-            
+
             current_balance = wallet.get("balance", 0.0)
             new_balance = current_balance + amount
             wallet["balance"] = new_balance
-            
+
             # Write back atomically
             temp_file = self._wallet_file.with_suffix('.tmp')
             with open(temp_file, 'w') as f:
                 json.dump(wallet, f)
             os.replace(temp_file, self._wallet_file)
-            
+
             return True, new_balance
-            
+
         finally:
             self._release_lock(lock_fd)
             os.close(lock_fd)
@@ -554,7 +554,7 @@ def _run_http_bridge(bridge: OpenClawBridge, host: str, port: int) -> None:
 
     import uvicorn
     logger.info("[bridge] Starting HTTP mode on %s:%d", host, port)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, loop="asyncio")
 
 
 if __name__ == "__main__":

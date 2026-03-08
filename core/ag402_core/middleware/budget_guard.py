@@ -21,54 +21,76 @@ class BudgetCheckResult:
     reason: str = ""
 
 
-class BudgetGuard:
-    """Pre-payment budget checks with multi-layer limits and circuit breaker."""
+class CircuitBreaker:
+    """Standalone circuit breaker — can be shared across BudgetGuard instances."""
 
-    # Circuit breaker state is class-level so all instances share it
-    _consecutive_failures: int = 0
-    _circuit_opened_at: float = 0.0
-    _lock = threading.Lock()
+    def __init__(self) -> None:
+        self._consecutive_failures: int = 0
+        self._circuit_opened_at: float = 0.0
+        self._lock = threading.Lock()
 
-    def __init__(self, wallet: AgentWallet, config: X402Config):
-        self._wallet = wallet
-        self._config = config
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 3:
+                self._circuit_opened_at = time.time()
 
-    # --- Circuit breaker methods ---
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
 
-    @classmethod
-    def record_failure(cls) -> None:
-        """Record a payment failure for circuit breaker tracking."""
-        with cls._lock:
-            cls._consecutive_failures += 1
-            if cls._consecutive_failures >= 3:  # will use config threshold at check time
-                cls._circuit_opened_at = time.time()
-
-    @classmethod
-    def record_success(cls) -> None:
-        """Record a payment success — resets failure counter."""
-        with cls._lock:
-            cls._consecutive_failures = 0
-
-    @classmethod
-    def is_circuit_open(cls, threshold: int, cooldown: int) -> bool:
-        """Check if the circuit breaker is currently open (blocking requests)."""
-        with cls._lock:
-            if cls._consecutive_failures < threshold:
+    def is_open(self, threshold: int, cooldown: int) -> bool:
+        with self._lock:
+            if self._consecutive_failures < threshold:
                 return False
-            elapsed = time.time() - cls._circuit_opened_at
-            if elapsed >= cooldown:
-                # Cooldown passed — reset and allow
-                cls._consecutive_failures = 0
-                cls._circuit_opened_at = 0.0
+            if time.time() - self._circuit_opened_at >= cooldown:
+                self._consecutive_failures = 0
+                self._circuit_opened_at = 0.0
                 return False
             return True
 
-    @classmethod
-    def reset_circuit_breaker(cls) -> None:
-        """Reset circuit breaker state (for testing)."""
-        with cls._lock:
-            cls._consecutive_failures = 0
-            cls._circuit_opened_at = 0.0
+    def reset(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._circuit_opened_at = 0.0
+
+    @property
+    def failures(self) -> int:
+        return self._consecutive_failures
+
+
+class BudgetGuard:
+    """Pre-payment budget checks with multi-layer limits and circuit breaker.
+
+    Each instance owns its own CircuitBreaker by default.
+    Pass a shared ``CircuitBreaker`` to the constructor if you need
+    multiple guards to share state (e.g. across middleware instances
+    in the same process).
+    """
+
+    def __init__(
+        self,
+        wallet: AgentWallet,
+        config: X402Config,
+        circuit_breaker: CircuitBreaker | None = None,
+    ):
+        self._wallet = wallet
+        self._config = config
+        self._cb = circuit_breaker or CircuitBreaker()
+
+    # --- Circuit breaker delegation ---
+
+    def record_failure(self) -> None:
+        self._cb.record_failure()
+
+    def record_success(self) -> None:
+        self._cb.record_success()
+
+    def is_circuit_open(self, threshold: int, cooldown: int) -> bool:
+        return self._cb.is_open(threshold, cooldown)
+
+    def reset_circuit_breaker(self) -> None:
+        self._cb.reset()
 
     async def check(self, amount: float | Decimal, *, max_amount: float | None = None) -> BudgetCheckResult:
         """Check if a payment amount is within all budget constraints.
@@ -86,7 +108,7 @@ class BudgetGuard:
             self._config.circuit_breaker_cooldown,
         ):
             msg = (
-                f"Circuit breaker open — {self._consecutive_failures} consecutive "
+                f"Circuit breaker open — {self._cb.failures} consecutive "
                 f"failures (threshold: {self._config.circuit_breaker_threshold})"
             )
             logger.warning("[BUDGET] DENIED — %s", msg)

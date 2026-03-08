@@ -153,13 +153,29 @@ class X402Gateway:
         )
 
         # P2-3.6: Health check endpoint (not gated behind payment)
+        # S2-1 FIX: In production mode, return minimal info only.
         @app.get("/health")
         async def health_check() -> JSONResponse:
-            """Return gateway health status and metrics."""
+            """Return gateway health status.
+
+            In production mode, only status and mode are returned to avoid
+            leaking internal infrastructure details (target_url, metrics).
+            In test mode, full details are available for debugging.
+            """
             uptime = time.time() - self._metrics["started_at"]
+
+            if not self._is_test_mode:
+                # S2-1: Production — minimal response, no internal details
+                return JSONResponse(content={
+                    "status": "healthy",
+                    "mode": "production",
+                    "uptime_seconds": round(uptime, 1),
+                })
+
+            # Test mode — full details for debugging
             return JSONResponse(content={
                 "status": "healthy",
-                "mode": "test" if self._is_test_mode else "production",
+                "mode": "test",
                 "target_url": self.target_url,
                 "uptime_seconds": round(uptime, 1),
                 "metrics": {
@@ -407,6 +423,16 @@ def cli_main() -> None:
 
     import uvicorn
 
+    # S1-2 FIX: Mode-aware host selection, consistent with `ag402 serve`.
+    # If user did not explicitly pass --host, choose based on X402_MODE.
+    host = args.host
+    is_test = os.getenv("X402_MODE", "test").lower() == "test"
+    if host == "127.0.0.1" and not is_test:
+        # Production mode: default to 0.0.0.0 (bind all interfaces)
+        host = "0.0.0.0"
+    elif host == "127.0.0.1" and is_test:
+        pass  # Keep 127.0.0.1 in test mode (safe default)
+
     gateway = X402Gateway(
         target_url=args.target,
         price=args.price,
@@ -418,10 +444,11 @@ def cli_main() -> None:
 
     logger.info(
         "[GATEWAY] Starting x402 gateway on %s:%d -> %s (price: %s %s)",
-        args.host, args.port, args.target, args.price, args.token,
+        host, args.port, args.target, args.price, args.token,
     )
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    # B1 FIX: Explicitly use asyncio event loop to avoid uvloop + aiosqlite conflicts.
+    uvicorn.run(app, host=host, port=args.port, loop="asyncio")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ services:
   # Mock upstream API (weather service, no auth)
   weather-api:
     build: .
-    command: python -m uvicorn examples.mock_weather_server:app --host 0.0.0.0 --port 8000
+    command: python -m uvicorn examples.mock_weather_server:app --host 0.0.0.0 --port 8000 --app-dir /app
     ports:
       - "18000:8000"
     healthcheck:

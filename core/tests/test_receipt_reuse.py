@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -540,22 +540,25 @@ async def test_gateway_new_tx_proxied_and_cached(tmp_path):
     import uuid
     tx_hash = f"tx_new_{uuid.uuid4().hex[:8]}"
 
-    with patch("ag402_mcp.gateway.httpx.AsyncClient") as MockClient:
-        mock_instance = AsyncMock()
-        mock_instance.request.return_value = mock_upstream_resp
-        mock_instance.aclose = AsyncMock()
-        MockClient.return_value = mock_instance
+    # Inject a mock http_client directly — ASGITransport does NOT trigger
+    # FastAPI lifespan, so _http_client stays None and the fallback path
+    # would create a real httpx.AsyncClient that tries to connect to
+    # "http://mock-upstream", causing the test to hang.
+    mock_upstream_client = AsyncMock()
+    mock_upstream_client.request.return_value = mock_upstream_resp
+    mock_upstream_client.aclose = AsyncMock()
+    gateway._http_client = mock_upstream_client
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testgw") as client:
-            response = await client.get(
-                "/weather",
-                headers={
-                    "Authorization": f"x402 {tx_hash}",
-                    "X-x402-Timestamp": str(int(time.time())),
-                    "X-x402-Nonce": uuid.uuid4().hex,
-                },
-            )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testgw") as client:
+        response = await client.get(
+            "/weather",
+            headers={
+                "Authorization": f"x402 {tx_hash}",
+                "X-x402-Timestamp": str(int(time.time())),
+                "X-x402-Nonce": uuid.uuid4().hex,
+            },
+        )
 
     assert response.status_code == 200
 
@@ -598,46 +601,40 @@ async def test_gateway_delivered_tx_rejected_on_reuse(tmp_path):
         headers={"content-type": "application/json"},
     )
 
-    with patch("ag402_mcp.gateway.httpx.AsyncClient") as MockClient:
-        mock_instance = AsyncMock()
-        mock_instance.request.return_value = mock_upstream_resp
-        mock_instance.aclose = AsyncMock()
-        MockClient.return_value = mock_instance
+    # Inject mock http_client directly to avoid lifespan issue
+    mock_instance = AsyncMock()
+    mock_instance.request.return_value = mock_upstream_resp
+    mock_instance.aclose = AsyncMock()
+    gateway._http_client = mock_instance
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testgw") as client:
-            resp1 = await client.get(
-                "/data",
-                headers={
-                    "Authorization": f"x402 {tx_hash}",
-                    "X-x402-Timestamp": str(int(time.time())),
-                    "X-x402-Nonce": uuid.uuid4().hex,
-                },
-            )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testgw") as client:
+        resp1 = await client.get(
+            "/data",
+            headers={
+                "Authorization": f"x402 {tx_hash}",
+                "X-x402-Timestamp": str(int(time.time())),
+                "X-x402-Nonce": uuid.uuid4().hex,
+            },
+        )
 
-        assert resp1.status_code == 200
+    assert resp1.status_code == 200
 
-        # Second request: same tx_hash, should get cached response
-        # The mock should NOT be called again for upstream
-        mock_instance.request.reset_mock()
+    # Second request: same tx_hash, should be rejected (already delivered)
+    mock_instance.request.reset_mock()
 
-        async with AsyncClient(transport=transport, base_url="http://testgw") as client:
-            resp2 = await client.get(
-                "/data",
-                headers={
-                    "Authorization": f"x402 {tx_hash}",
-                    "X-x402-Timestamp": str(int(time.time())),
-                    "X-x402-Nonce": uuid.uuid4().hex,
-                },
-            )
+    async with AsyncClient(transport=transport, base_url="http://testgw") as client:
+        resp2 = await client.get(
+            "/data",
+            headers={
+                "Authorization": f"x402 {tx_hash}",
+                "X-x402-Timestamp": str(int(time.time())),
+                "X-x402-Nonce": uuid.uuid4().hex,
+            },
+        )
 
-    # Since it's delivered, the status check will return EXPIRED
-    # which means it'll be rejected. That's correct — already delivered means no retry needed.
-    # Actually for the test to work correctly we need to check:
-    # The cached response path only fires for WITHIN_GRACE status.
-    # Since we marked_delivered in the first request, it returns EXPIRED.
-    # This is correct behavior: a successfully delivered tx should not be reused.
-    # For the "retry after upstream failure" scenario, see the next test.
+    # Since it's delivered, the status check will return EXPIRED → rejected.
+    # This is correct: a successfully delivered tx should not be reused.
     assert resp2.status_code == 402  # Rejected as expired (already delivered)
 
     await gateway._persistent_guard.close()
@@ -664,49 +661,49 @@ async def test_gateway_grace_window_reproxi_after_upstream_failure(tmp_path):
     import uuid
     tx_hash = f"tx_fail_retry_{uuid.uuid4().hex[:8]}"
 
+    # Inject mock http_client directly to avoid lifespan issue
+    mock_instance = AsyncMock()
+    mock_instance.aclose = AsyncMock()
+    gateway._http_client = mock_instance
+
     # First request: upstream returns 502 (failure)
     mock_fail_resp = httpx.Response(502, content=b"Bad Gateway")
+    mock_instance.request.return_value = mock_fail_resp
 
-    with patch("ag402_mcp.gateway.httpx.AsyncClient") as MockClient:
-        mock_instance = AsyncMock()
-        mock_instance.request.return_value = mock_fail_resp
-        mock_instance.aclose = AsyncMock()
-        MockClient.return_value = mock_instance
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testgw") as client:
-            resp1 = await client.get(
-                "/data",
-                headers={
-                    "Authorization": f"x402 {tx_hash}",
-                    "X-x402-Timestamp": str(int(time.time())),
-                    "X-x402-Nonce": uuid.uuid4().hex,
-                },
-            )
-
-        # First request gets the 502 from upstream
-        assert resp1.status_code == 502
-
-        # Verify NOT marked as delivered (so grace window applies)
-        status = await gateway._persistent_guard.check_tx_status(tx_hash)
-        assert status == TxHashStatus.WITHIN_GRACE
-
-        # Second request: same tx_hash, upstream now returns 200
-        mock_ok_resp = httpx.Response(
-            200, content=b'{"data":"success"}',
-            headers={"content-type": "application/json"},
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testgw") as client:
+        resp1 = await client.get(
+            "/data",
+            headers={
+                "Authorization": f"x402 {tx_hash}",
+                "X-x402-Timestamp": str(int(time.time())),
+                "X-x402-Nonce": uuid.uuid4().hex,
+            },
         )
-        mock_instance.request.return_value = mock_ok_resp
 
-        async with AsyncClient(transport=transport, base_url="http://testgw") as client:
-            resp2 = await client.get(
-                "/data",
-                headers={
-                    "Authorization": f"x402 {tx_hash}",
-                    "X-x402-Timestamp": str(int(time.time())),
-                    "X-x402-Nonce": uuid.uuid4().hex,
-                },
-            )
+    # First request gets the 502 from upstream
+    assert resp1.status_code == 502
+
+    # Verify NOT marked as delivered (so grace window applies)
+    status = await gateway._persistent_guard.check_tx_status(tx_hash)
+    assert status == TxHashStatus.WITHIN_GRACE
+
+    # Second request: same tx_hash, upstream now returns 200
+    mock_ok_resp = httpx.Response(
+        200, content=b'{"data":"success"}',
+        headers={"content-type": "application/json"},
+    )
+    mock_instance.request.return_value = mock_ok_resp
+
+    async with AsyncClient(transport=transport, base_url="http://testgw") as client:
+        resp2 = await client.get(
+            "/data",
+            headers={
+                "Authorization": f"x402 {tx_hash}",
+                "X-x402-Timestamp": str(int(time.time())),
+                "X-x402-Nonce": uuid.uuid4().hex,
+            },
+        )
 
     assert resp2.status_code == 200
     data = resp2.json()

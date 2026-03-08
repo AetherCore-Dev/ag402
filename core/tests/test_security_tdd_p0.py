@@ -361,96 +361,87 @@ def _run_threads_with_timeout(threads, timeout=_THREAD_TIMEOUT):
 
 def test_cb_concurrent_failure_recording():
     """Multiple threads recording failures concurrently must not corrupt state."""
-    from ag402_core.middleware.budget_guard import BudgetGuard
+    from ag402_core.middleware.budget_guard import CircuitBreaker
 
-    BudgetGuard.reset_circuit_breaker()
-    try:
-        n_threads = 20
-        barrier = threading.Barrier(n_threads, timeout=5)
+    cb = CircuitBreaker()
+    n_threads = 20
+    barrier = threading.Barrier(n_threads, timeout=5)
 
-        def record_failures():
-            barrier.wait(timeout=5)
-            for _ in range(10):
-                BudgetGuard.record_failure()
+    def record_failures():
+        barrier.wait(timeout=5)
+        for _ in range(10):
+            cb.record_failure()
 
-        threads = [
-            threading.Thread(target=record_failures, name=f"fail-{i}")
-            for i in range(n_threads)
-        ]
-        _run_threads_with_timeout(threads)
+    threads = [
+        threading.Thread(target=record_failures, name=f"fail-{i}")
+        for i in range(n_threads)
+    ]
+    _run_threads_with_timeout(threads)
 
-        with BudgetGuard._lock:
-            assert BudgetGuard._consecutive_failures == 200
-    finally:
-        BudgetGuard.reset_circuit_breaker()
+    with cb._lock:
+        assert cb._consecutive_failures == 200
 
 
 def test_cb_concurrent_success_resets_counter():
     """record_success under concurrent load must reliably reset counter."""
-    from ag402_core.middleware.budget_guard import BudgetGuard
+    from ag402_core.middleware.budget_guard import CircuitBreaker
 
-    BudgetGuard.reset_circuit_breaker()
-    try:
-        for _ in range(50):
-            BudgetGuard.record_failure()
+    cb = CircuitBreaker()
+    for _ in range(50):
+        cb.record_failure()
 
-        n_threads = 10
-        barrier = threading.Barrier(n_threads, timeout=5)
+    n_threads = 10
+    barrier = threading.Barrier(n_threads, timeout=5)
 
-        def record_success():
-            barrier.wait(timeout=5)
-            BudgetGuard.record_success()
+    def record_success():
+        barrier.wait(timeout=5)
+        cb.record_success()
 
-        threads = [
-            threading.Thread(target=record_success, name=f"succ-{i}")
-            for i in range(n_threads)
-        ]
-        _run_threads_with_timeout(threads)
+    threads = [
+        threading.Thread(target=record_success, name=f"succ-{i}")
+        for i in range(n_threads)
+    ]
+    _run_threads_with_timeout(threads)
 
-        with BudgetGuard._lock:
-            assert BudgetGuard._consecutive_failures == 0
-    finally:
-        BudgetGuard.reset_circuit_breaker()
+    with cb._lock:
+        assert cb._consecutive_failures == 0
 
 
 def test_cb_circuit_open_check_race_with_failure():
-    """is_circuit_open and record_failure must not have TOCTOU issues."""
-    from ag402_core.middleware.budget_guard import BudgetGuard
+    """is_open and record_failure must not have TOCTOU issues."""
+    from ag402_core.middleware.budget_guard import CircuitBreaker
 
-    BudgetGuard.reset_circuit_breaker()
-    try:
-        results = {"open_count": 0, "closed_count": 0}
-        results_lock = threading.Lock()
-        n_threads = 20
-        barrier = threading.Barrier(n_threads, timeout=5)
+    cb = CircuitBreaker()
+    results = {"open_count": 0, "closed_count": 0}
+    results_lock = threading.Lock()
+    n_threads = 20
+    barrier = threading.Barrier(n_threads, timeout=5)
 
-        def mixed_operations():
-            barrier.wait(timeout=5)
-            local_open = 0
-            local_closed = 0
-            for i in range(50):
-                if i % 2 == 0:
-                    BudgetGuard.record_failure()
+    def mixed_operations():
+        barrier.wait(timeout=5)
+        local_open = 0
+        local_closed = 0
+        for i in range(50):
+            if i % 2 == 0:
+                cb.record_failure()
+            else:
+                is_open = cb.is_open(threshold=3, cooldown=60)
+                if is_open:
+                    local_open += 1
                 else:
-                    is_open = BudgetGuard.is_circuit_open(threshold=3, cooldown=60)
-                    if is_open:
-                        local_open += 1
-                    else:
-                        local_closed += 1
-            with results_lock:
-                results["open_count"] += local_open
-                results["closed_count"] += local_closed
+                    local_closed += 1
+        with results_lock:
+            results["open_count"] += local_open
+            results["closed_count"] += local_closed
 
-        threads = [
-            threading.Thread(target=mixed_operations, name=f"mix-{i}")
-            for i in range(n_threads)
-        ]
-        _run_threads_with_timeout(threads)
+    threads = [
+        threading.Thread(target=mixed_operations, name=f"mix-{i}")
+        for i in range(n_threads)
+    ]
+    _run_threads_with_timeout(threads)
 
-        total_checks = results["open_count"] + results["closed_count"]
-        assert total_checks > 0, "No circuit breaker checks were performed"
-    finally:
-        BudgetGuard.reset_circuit_breaker()
+    total_checks = results["open_count"] + results["closed_count"]
+    assert total_checks > 0, "No circuit breaker checks were performed"
 
 
 async def test_cb_budget_check_with_open_circuit(wallet):
@@ -458,20 +449,16 @@ async def test_cb_budget_check_with_open_circuit(wallet):
     from ag402_core.config import RunMode, X402Config
     from ag402_core.middleware.budget_guard import BudgetGuard
 
-    BudgetGuard.reset_circuit_breaker()
-    try:
-        config = X402Config(
-            mode=RunMode.TEST,
-            circuit_breaker_threshold=3,
-            circuit_breaker_cooldown=60,
-        )
-        guard = BudgetGuard(wallet, config)
+    config = X402Config(
+        mode=RunMode.TEST,
+        circuit_breaker_threshold=3,
+        circuit_breaker_cooldown=60,
+    )
+    guard = BudgetGuard(wallet, config)
 
-        for _ in range(5):
-            BudgetGuard.record_failure()
+    for _ in range(5):
+        guard.record_failure()
 
-        result = await guard.check(Decimal("0.01"))
-        assert not result.allowed
-        assert "circuit breaker" in result.reason.lower()
-    finally:
-        BudgetGuard.reset_circuit_breaker()
+    result = await guard.check(Decimal("0.01"))
+    assert not result.allowed
+    assert "circuit breaker" in result.reason.lower()

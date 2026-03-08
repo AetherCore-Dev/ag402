@@ -10,7 +10,6 @@ Coverage:
 
 from __future__ import annotations
 
-import os
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -253,11 +252,11 @@ async def test_wallet_close_and_reopen(tmp_path):
 # ===================================================================
 
 @pytest.fixture
-def gateway_app(tmp_path):
+def gateway_app(tmp_path, monkeypatch):
     """Create a test gateway app."""
     from ag402_mcp.gateway import X402Gateway
 
-    os.environ["X402_MODE"] = "test"
+    monkeypatch.setenv("X402_MODE", "test")
     gw = X402Gateway(
         target_url="http://testserver:9999",
         price="0.05",
@@ -318,13 +317,13 @@ async def test_gateway_x402_without_replay_headers(gateway_client):
     assert "replay" in data.get("error", "").lower() or "replay" in data.get("detail", "").lower()
 
 
-async def test_gateway_x402_with_replay_headers(tmp_path):
+async def test_gateway_x402_with_replay_headers(tmp_path, monkeypatch):
     """x402 auth with valid replay headers should proceed to verification."""
     from ag402_core.security.replay_guard import generate_replay_headers
     from ag402_mcp.gateway import X402Gateway
     from httpx import ASGITransport, AsyncClient
 
-    os.environ["X402_MODE"] = "test"
+    monkeypatch.setenv("X402_MODE", "test")
     gw = X402Gateway(
         target_url="http://testserver:9999",
         price="0.05",
@@ -358,12 +357,12 @@ async def test_gateway_x402_with_replay_headers(tmp_path):
     await gw._persistent_guard.close()
 
 
-async def test_gateway_rate_limit(tmp_path):
+async def test_gateway_rate_limit(tmp_path, monkeypatch):
     """Exceeding rate limit should return 429."""
     from ag402_mcp.gateway import X402Gateway
     from httpx import ASGITransport, AsyncClient
 
-    os.environ["X402_MODE"] = "test"
+    monkeypatch.setenv("X402_MODE", "test")
     gw = X402Gateway(
         target_url="http://testserver:9999",
         price="0.05",
@@ -397,13 +396,13 @@ async def test_gateway_metrics_increment(gateway_client):
     assert gw._metrics["challenges_issued"] >= 1
 
 
-async def test_gateway_header_whitelist(tmp_path):
+async def test_gateway_header_whitelist(tmp_path, monkeypatch):
     """Dangerous headers should not be forwarded to upstream."""
     from ag402_core.security.replay_guard import generate_replay_headers
     from ag402_mcp.gateway import X402Gateway
     from httpx import ASGITransport, AsyncClient
 
-    os.environ["X402_MODE"] = "test"
+    monkeypatch.setenv("X402_MODE", "test")
     gw = X402Gateway(
         target_url="http://testserver:9999",
         price="0.05",

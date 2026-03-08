@@ -334,7 +334,7 @@ class AgentWallet:
             os.path.realpath(str(Path.home())),
             os.path.realpath(tempfile.gettempdir()),
         ]
-        if not any(resolved.startswith(d) for d in allowed_dirs):
+        if not any(resolved == d or resolved.startswith(d + os.sep) for d in allowed_dirs):
             raise ValueError(
                 f"Export path must be under CWD, HOME, or TMPDIR, got: {resolved}"
             )

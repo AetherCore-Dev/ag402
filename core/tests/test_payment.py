@@ -43,9 +43,13 @@ async def test_mock_adapter_balance(mock_adapter: MockSolanaAdapter) -> None:
 
 
 async def test_mock_adapter_verify(mock_adapter: MockSolanaAdapter) -> None:
-    """MockSolanaAdapter.verify_payment() validates tx_hash and checks known payments."""
-    # Valid tx_hash with mock_tx_ prefix should pass
-    assert await mock_adapter.verify_payment("mock_tx_abcdef12") is True
+    """MockSolanaAdapter.verify_payment() only accepts hashes issued by .pay().
+
+    S1-3: Arbitrary mock_tx_ prefixed hashes are no longer accepted;
+    only hashes actually recorded by .pay() pass verification.
+    """
+    # Unrecorded mock_tx_ hash must be rejected (S1-3 security fix)
+    assert await mock_adapter.verify_payment("mock_tx_abcdef12") is False
     # Empty or too-short tx_hash should be rejected
     assert await mock_adapter.verify_payment("") is False
     assert await mock_adapter.verify_payment("short") is False

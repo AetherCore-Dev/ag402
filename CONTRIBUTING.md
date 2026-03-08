@@ -20,10 +20,15 @@ make install    # Installs all 4 packages in editable mode
 ### Running Tests
 
 ```bash
-make test       # Run all 430+ tests
+make test       # Run all 588+ tests
 make lint       # Ruff code checks
 make coverage   # Coverage report
 ```
+
+> **macOS Note**: Use `--timeout-method=thread` with pytest to avoid signal-based timeout issues:
+> ```bash
+> python -m pytest core/tests/ -v --timeout=10 --timeout-method=thread
+> ```
 
 ## How to Contribute
 
@@ -61,11 +66,29 @@ make coverage   # Coverage report
 ## Project Structure
 
 ```
-protocol/    → open402 (zero-dependency protocol layer)
-core/        → ag402-core (payment engine)
-adapters/    → ag402-mcp (gateway) + ag402-client-mcp (MCP client)
-examples/    → Demo scripts
-docs/        → Documentation
+protocol/open402/                     → open402 (zero-dependency protocol layer)
+  spec.py                             → Constants, chain/token definitions, amount validation
+  headers.py                          → x402 header parsing and building
+  negotiation.py                      → Version negotiation
+
+core/ag402_core/                      → ag402-core (payment engine + CLI)
+  config.py                           → Configuration, mode system, SSRF validation
+  cli.py                              → 20+ CLI commands with colorized output
+  monkey.py                           → enable()/disable()/enabled() monkey-patch SDK
+  wallet/                             → SQLite ledger, budget, payment order state machine
+  payment/                            → Solana adapter, mock, registry, retry + failover
+  middleware/                         → x402 interception, budget guard, circuit breaker
+  gateway/                            → Server-side payment gate + auth + header whitelist
+  security/                           → Key guard, encryption, rate limiter, replay guard
+  proxy/                              → HTTP forward proxy (SSRF-safe)
+  runners/                            → Agent runners (secure tmpdir injection)
+
+adapters/mcp/ag402_mcp/               → ag402-mcp (HTTP gateway for sellers)
+adapters/client_mcp/ag402_client_mcp/ → ag402-client-mcp (MCP client for AI tools)
+adapters/openclaw/                    → OpenClaw bridge + skill + prepaid system
+
+examples/                             → Demo scripts
+docs/                                 → Integration guides (Claude Code, Cursor, OpenClaw, localnet)
 ```
 
 ## Security

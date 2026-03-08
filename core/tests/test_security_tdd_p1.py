@@ -463,9 +463,13 @@ def test_parse_authorization_wrong_scheme():
 # 4. Monkey-patch Concurrency
 # ===================================================================
 
+@patch.dict(os.environ, {"X402_MODE": "test"})
 def test_monkey_enable_disable_idempotent():
     """enable() is ref-counted; each enable() needs a matching disable()."""
     from ag402_core import monkey
+
+    # Reset middleware so _ensure_middleware picks up X402_MODE=test
+    monkey._middleware = None
 
     # Ensure clean state
     monkey.disable()
@@ -490,12 +494,15 @@ def test_monkey_enable_disable_idempotent():
         # Drain any remaining depth
         while monkey.is_enabled():
             monkey.disable()
+        monkey._middleware = None
 
 
+@patch.dict(os.environ, {"X402_MODE": "test"})
 def test_monkey_context_manager():
     """enabled() context manager should auto-disable on exit."""
     from ag402_core import monkey
 
+    monkey._middleware = None
     monkey.disable()
     assert not monkey.is_enabled()
 
@@ -503,24 +510,30 @@ def test_monkey_context_manager():
         assert monkey.is_enabled()
 
     assert not monkey.is_enabled()
+    monkey._middleware = None
 
 
+@patch.dict(os.environ, {"X402_MODE": "test"})
 def test_monkey_context_manager_on_exception():
     """enabled() should disable even if an exception is raised inside."""
     from ag402_core import monkey
 
+    monkey._middleware = None
     monkey.disable()
     with pytest.raises(RuntimeError), monkey.enabled():
         assert monkey.is_enabled()
         raise RuntimeError("test error")
 
     assert not monkey.is_enabled()
+    monkey._middleware = None
 
 
+@patch.dict(os.environ, {"X402_MODE": "test"})
 def test_monkey_concurrent_enable_disable():
     """Concurrent enable/disable should not corrupt state."""
     from ag402_core import monkey
 
+    monkey._middleware = None
     monkey.disable()
     errors = []
     n_threads = 10
@@ -551,6 +564,7 @@ def test_monkey_concurrent_enable_disable():
     # Drain all remaining depth from concurrent enable() calls
     while monkey.is_enabled():
         monkey.disable()
+    monkey._middleware = None
 
     assert not errors, f"Concurrent monkey-patch errors: {errors}"
     assert not monkey.is_enabled()

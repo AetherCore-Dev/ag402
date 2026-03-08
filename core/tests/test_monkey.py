@@ -11,14 +11,25 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _test_mode_env(monkeypatch):
+    """Set X402_MODE=test so enable() can resolve a MockSolanaAdapter."""
+    monkeypatch.setenv("X402_MODE", "test")
+
+
+@pytest.fixture(autouse=True)
 def _cleanup():
     """Ensure monkey-patch is disabled after each test."""
+    import httpx
+    _orig_send = getattr(monkey_mod, '_original_httpx_send', None) or httpx.AsyncClient.send
     yield
     # Fully drain enable depth (handles both bool and refcount implementations)
     for _ in range(10):
         if not ag402_core.is_enabled():
             break
         monkey_mod.disable()
+    # Explicitly restore httpx/requests if still patched
+    if monkey_mod._patched_httpx and monkey_mod._original_httpx_send is not None:
+        httpx.AsyncClient.send = monkey_mod._original_httpx_send
     # Reset global state
     monkey_mod._middleware = None
     monkey_mod._middleware_init_lock = None

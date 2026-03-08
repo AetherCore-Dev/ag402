@@ -39,10 +39,99 @@ def _is_local_address(hostname: str) -> bool:
         return False
 
 
+def _is_private_address(hostname: str) -> bool:
+    """Check if a hostname is a private/reserved IP (SSRF protection)."""
+    bare = hostname.strip("[]")
+    try:
+        addr = ipaddress.ip_address(bare)
+        return addr.is_private or addr.is_reserved or addr.is_loopback
+    except ValueError:
+        return False
+
+
 @dataclass
 class ChallengeValidation:
     valid: bool
     error: str = ""
+
+
+def validate_url_safety(url: str, *, allow_localhost: bool = False) -> ChallengeValidation:
+    """Validate a URL for SSRF safety before making outbound requests.
+
+    Blocks:
+    - Non-HTTP(S) schemes (ftp://, file://, etc.)
+    - HTTP without TLS (unless allow_localhost=True and target is loopback)
+    - Private/reserved IPs (10.x, 172.16-31.x, 192.168.x, etc.)
+    - Localhost (unless allow_localhost=True)
+    - Hostnames that DNS-resolve to private/loopback IPs (DNS rebinding)
+
+    This is the single entry point for all outbound URL validation in ag402.
+    """
+    import socket
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").lower()
+
+    if scheme not in ("http", "https"):
+        return ChallengeValidation(
+            valid=False,
+            error=f"Blocked scheme '{scheme}' — only HTTP(S) allowed",
+        )
+
+    if not hostname:
+        return ChallengeValidation(valid=False, error="Missing hostname")
+
+    is_local = _is_local_address(hostname)
+    is_private = _is_private_address(hostname)
+
+    # Block private/internal IPs (unless it's localhost and we allow it)
+    if is_private and not (allow_localhost and is_local):
+        return ChallengeValidation(
+            valid=False,
+            error=f"Blocked private/reserved address '{hostname}' — SSRF protection",
+        )
+
+    # Require HTTPS for non-local targets
+    if scheme != "https" and not (allow_localhost and is_local):
+        return ChallengeValidation(
+            valid=False,
+            error=f"HTTPS required for remote targets (got '{scheme}')",
+        )
+
+    # DNS rebinding protection: resolve hostname and check resolved IP.
+    # Skip for literal IPs (already checked above) and allowed localhost.
+    if not is_local and not is_private:
+        bare = hostname.strip("[]")
+        is_literal_ip = False
+        try:
+            ipaddress.ip_address(bare)
+            is_literal_ip = True
+        except ValueError:
+            pass
+
+        if not is_literal_ip:
+            port = parsed.port or (443 if scheme == "https" else 80)
+            try:
+                addrs = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+            except socket.gaierror as exc:
+                return ChallengeValidation(
+                    valid=False,
+                    error=f"DNS resolution failed for '{hostname}': {exc}",
+                )
+            for family, _, _, _, sockaddr in addrs:
+                resolved_ip = sockaddr[0]
+                try:
+                    addr = ipaddress.ip_address(resolved_ip)
+                    if addr.is_private or addr.is_reserved or addr.is_loopback:
+                        return ChallengeValidation(
+                            valid=False,
+                            error=f"DNS rebinding blocked — '{hostname}' resolved to private address {resolved_ip}",
+                        )
+                except ValueError:
+                    continue
+
+    return ChallengeValidation(valid=True)
 
 
 def validate_challenge(

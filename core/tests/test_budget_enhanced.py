@@ -42,12 +42,6 @@ async def _make_wallet(tmp_path, balance: float = 100.0) -> AgentWallet:
 
 
 class TestPerMinuteSpendLimit:
-    @pytest.fixture(autouse=True)
-    def _reset_circuit(self):
-        BudgetGuard.reset_circuit_breaker()
-        yield
-        BudgetGuard.reset_circuit_breaker()
-
     @pytest.mark.asyncio
     async def test_per_minute_spend_blocks(self, tmp_path):
         """Spending over per_minute_limit within a minute is blocked."""
@@ -88,12 +82,6 @@ class TestPerMinuteSpendLimit:
 
 
 class TestPerMinuteCountLimit:
-    @pytest.fixture(autouse=True)
-    def _reset_circuit(self):
-        BudgetGuard.reset_circuit_breaker()
-        yield
-        BudgetGuard.reset_circuit_breaker()
-
     @pytest.mark.asyncio
     async def test_per_minute_count_blocks(self, tmp_path):
         """Exceeding per_minute_count within a minute is blocked."""
@@ -135,12 +123,6 @@ class TestPerMinuteCountLimit:
 
 
 class TestCircuitBreaker:
-    @pytest.fixture(autouse=True)
-    def _reset_circuit(self):
-        BudgetGuard.reset_circuit_breaker()
-        yield
-        BudgetGuard.reset_circuit_breaker()
-
     @pytest.mark.asyncio
     async def test_circuit_breaker_opens_after_failures(self, tmp_path):
         """3 consecutive failures should open the circuit breaker."""
@@ -148,10 +130,10 @@ class TestCircuitBreaker:
         config = _cfg(circuit_breaker_threshold=3, circuit_breaker_cooldown=60)
         guard = BudgetGuard(wallet, config)
 
-        # Record 3 failures
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
+        # Record 3 failures via instance
+        guard.record_failure()
+        guard.record_failure()
+        guard.record_failure()
 
         # Circuit should be open — deny even valid requests
         result = await guard.check(0.01)
@@ -167,8 +149,8 @@ class TestCircuitBreaker:
         config = _cfg(circuit_breaker_threshold=3, circuit_breaker_cooldown=60)
         guard = BudgetGuard(wallet, config)
 
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
+        guard.record_failure()
+        guard.record_failure()
 
         result = await guard.check(0.01)
         assert result.allowed
@@ -184,9 +166,9 @@ class TestCircuitBreaker:
         guard = BudgetGuard(wallet, config)
 
         # Open the circuit
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
+        guard.record_failure()
+        guard.record_failure()
+        guard.record_failure()
 
         # Should be blocked
         result = await guard.check(0.01)
@@ -208,16 +190,16 @@ class TestCircuitBreaker:
         config = _cfg(circuit_breaker_threshold=3, circuit_breaker_cooldown=60)
         guard = BudgetGuard(wallet, config)
 
-        BudgetGuard.record_failure()
-        BudgetGuard.record_failure()
-        BudgetGuard.record_success()
+        guard.record_failure()
+        guard.record_failure()
+        guard.record_success()
 
         # Should not have tripped
         result = await guard.check(0.01)
         assert result.allowed
 
         # Another failure after success — only 1 failure now
-        BudgetGuard.record_failure()
+        guard.record_failure()
         result = await guard.check(0.01)
         assert result.allowed
 
@@ -230,12 +212,6 @@ class TestCircuitBreaker:
 
 
 class TestMaxSingleTx:
-    @pytest.fixture(autouse=True)
-    def _reset_circuit(self):
-        BudgetGuard.reset_circuit_breaker()
-        yield
-        BudgetGuard.reset_circuit_breaker()
-
     def test_max_single_tx_constant(self):
         """MAX_SINGLE_TX should be 5.0."""
         assert MAX_SINGLE_TX == 5.0

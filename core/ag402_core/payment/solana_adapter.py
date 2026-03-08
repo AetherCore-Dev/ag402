@@ -341,10 +341,21 @@ class SolanaAdapter(BasePaymentProvider):
                         "[CONFIRM] Transaction %s failed on-chain: %s",
                         tx_hash[:16], tx_err,
                     )
+                    # B2 FIX: Detect ATA-related on-chain errors
+                    err_str = str(tx_err)
+                    err_lower = err_str.lower()
+                    ata_hints = ["accountnotfound", "invalid account owner",
+                                 "insufficient funds", "token account"]
+                    if any(h in err_lower for h in ata_hints):
+                        err_str = (
+                            f"Transaction failed — the recipient may not have a "
+                            f"USDC token account (ATA). Contact the API provider. "
+                            f"(Detail: {err_str[:120]})"
+                        )
                     return PaymentResult(
                         tx_hash=tx_hash,
                         success=False,
-                        error=f"Transaction failed on-chain: {tx_err}",
+                        error=err_str,
                         chain="solana",
                         confirmation_status="failed",
                     )
@@ -371,8 +382,27 @@ class SolanaAdapter(BasePaymentProvider):
             )
 
         except Exception as exc:
+            # B2 FIX: Detect ATA-related errors and provide friendly hints
+            error_str = str(exc)
+            error_lower = error_str.lower()
+            ata_indicators = [
+                "accountnotfound",
+                "invalid account owner",
+                "insufficient funds",
+                "token account not found",
+                "associated token account",
+            ]
+            if any(ind in error_lower for ind in ata_indicators):
+                friendly = (
+                    f"Payment failed — the recipient may not have a USDC token "
+                    f"account (ATA). Contact the API provider to create one. "
+                    f"(Detail: {error_str[:120]})"
+                )
+                return PaymentResult(
+                    tx_hash="", success=False, error=friendly, chain="solana"
+                )
             return PaymentResult(
-                tx_hash="", success=False, error=str(exc), chain="solana"
+                tx_hash="", success=False, error=error_str, chain="solana"
             )
 
     async def check_balance(self) -> float:
@@ -537,13 +567,28 @@ class SolanaAdapter(BasePaymentProvider):
         """Return this wallet's public key as a base58 string."""
         return str(self._keypair.pubkey())
 
+    async def aclose(self) -> None:
+        """Async close: properly shut down the httpx session inside AsyncClient."""
+        import gc
+
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+        self._keypair = None  # type: ignore[assignment]
+        self._client = None  # type: ignore[assignment]
+        gc.collect()
+
     def close(self) -> None:
-        """Clear the private key from memory and release the RPC client."""
+        """Sync close: clear the private key from memory.
+
+        Prefer ``aclose()`` in async contexts to properly shut down
+        the underlying httpx session.
+        """
         import gc
 
         self._keypair = None  # type: ignore[assignment]
-        # Detach the RPC client reference; the underlying httpx session
-        # will be cleaned up by GC or the event loop shutdown.
         self._client = None  # type: ignore[assignment]
         gc.collect()
 
@@ -582,11 +627,16 @@ class MockSolanaAdapter(BasePaymentProvider):
         expected_address: str = "",
         expected_sender: str = "",
     ) -> bool:
-        """Mock verification — checks tx_hash format and matches known payments."""
+        """Mock verification — only accepts tx_hashes actually issued by this adapter.
+
+        S1-3 FIX: Removed the fallback ``tx_hash.startswith("mock_tx_")`` which
+        allowed anyone to forge a valid-looking payment proof in test mode.
+        Now only hashes recorded by ``.pay()`` are accepted.
+        """
         if not tx_hash or len(tx_hash) < 8:
             return False
-        # In test mode, check if we issued this tx_hash
-        return any(p.tx_hash == tx_hash for p in self._payments) or tx_hash.startswith("mock_tx_")
+        # S1-3: Only accept tx_hashes that we actually created via .pay()
+        return any(p.tx_hash == tx_hash for p in self._payments)
 
     def get_address(self) -> str:
         return self._address

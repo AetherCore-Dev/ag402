@@ -487,6 +487,8 @@ def _cmd_run(args) -> None:
     tmpdir = None
     if _is_python_command(cmd):
         tmpdir = tempfile.mkdtemp(prefix="ag402_")
+        # S2-2 FIX: Restrict tmpdir permissions to owner-only (0o700)
+        os.chmod(tmpdir, 0o700)
         sc_path = os.path.join(tmpdir, "sitecustomize.py")
         with open(sc_path, "w") as f:
             f.write(
@@ -561,7 +563,7 @@ def _cmd_env(args) -> None:
 
     elif action == "init":
         # Same as setup but only the env part
-        _cmd_setup()
+        _cmd_setup(argparse.Namespace(show_examples=False))
 
     elif action == "set":
         key = args.key
@@ -585,9 +587,24 @@ def _check_port_available(host: str, port: int) -> bool:
 
 def _cmd_serve(args) -> None:
     """Start the payment gateway in provider mode."""
+    from ag402_core.config import load_config as _load_cfg
+
     target = args.target
-    host = getattr(args, "host", "0.0.0.0")
     port = args.port
+
+    # S1-2 FIX: Mode-aware host selection.
+    # If user explicitly passed --host, use it; otherwise pick based on X402_MODE.
+    _cfg = _load_cfg()
+    user_specified_host = getattr(args, "host", "0.0.0.0")
+    _parser_default_host = "0.0.0.0"
+    if user_specified_host == _parser_default_host and _cfg.is_test_mode:
+        host = "127.0.0.1"
+    else:
+        host = user_specified_host
+    if _cfg.is_test_mode and host == "0.0.0.0":
+        print(f"  {_yellow('⚠')} {_bold('Security Warning')}: Binding 0.0.0.0 in test mode!")
+        print("     Test mode has no on-chain verification — do NOT expose publicly.")
+        print()
     price = args.price
     address = args.address
     use_localnet = getattr(args, "localnet", False)
@@ -752,10 +769,11 @@ def _cmd_serve(args) -> None:
         print(f"  {_bold('Request log:')}")
         print()
 
-        # Use asyncio.run() with uvicorn.Server to ensure a single event loop,
-        # avoiding aiosqlite background thread conflicts (BUG-2: event loop mismatch).
+        # B1 FIX: Explicitly use loop="asyncio" to avoid uvloop + aiosqlite conflicts.
+        # uvicorn auto-selects uvloop when installed, which breaks aiosqlite's
+        # background thread connection mechanism.
         try:
-            config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+            config = uvicorn.Config(app, host=host, port=port, log_level="warning", loop="asyncio")
             server = uvicorn.Server(config)
             asyncio.run(server.serve())
         finally:
@@ -910,7 +928,6 @@ async def _cmd_init(db_path: str) -> None:
 
 async def _cmd_status() -> None:
     from ag402_core.config import MAX_SINGLE_TX, load_config
-    from ag402_core.middleware.budget_guard import BudgetGuard
     from ag402_core.wallet.agent_wallet import AgentWallet
 
     config = load_config()
@@ -965,20 +982,12 @@ async def _cmd_status() -> None:
     print(f"  Minute TXs      {_bar(minute_count, config.per_minute_count)}  {minute_count} / {config.per_minute_count}")
     print()
 
-    # Security layers
-    cb_open = BudgetGuard.is_circuit_open(
-        config.circuit_breaker_threshold, config.circuit_breaker_cooldown
-    )
-    cb_failures = BudgetGuard._consecutive_failures
-
+    # Security layers (config only — runtime circuit breaker state lives in the gateway process)
     print("  Security Layers:")
     print(f"    {_green('✓')}  Single-TX cap:        ${MAX_SINGLE_TX:.2f}")
     print(f"    {_green('✓')}  Per-minute cap:       ${config.per_minute_limit:.2f} / {config.per_minute_count} txns")
     print(f"    {_green('✓')}  Daily cap:            ${daily_limit:.2f}")
-    if cb_open:
-        print(f"    {_red('✗')}  Circuit breaker:      {_red('OPEN')} ({cb_failures}/{config.circuit_breaker_threshold} failures)")
-    else:
-        print(f"    {_green('✓')}  Circuit breaker:      OK ({cb_failures}/{config.circuit_breaker_threshold} failures)")
+    print(f"    {_green('✓')}  Circuit breaker:      threshold={config.circuit_breaker_threshold}, cooldown={config.circuit_breaker_cooldown}s")
     print(f"    {_green('✓')}  Replay guard:         Active ({config.replay_window_seconds}s window)")
     print(f"    {_green('✓')}  Private key filter:   Active")
     print()
@@ -1417,10 +1426,20 @@ async def _cmd_pay(url: str, method: str, db_path: str) -> None:
 
     from ag402_core.config import load_config
     from ag402_core.payment.registry import PaymentProviderRegistry
+    from ag402_core.security.challenge_validator import validate_url_safety
     from ag402_core.security.replay_guard import generate_replay_headers
     from ag402_core.wallet.agent_wallet import AgentWallet
 
     config = load_config()
+
+    # SSRF protection: validate URL before making any outbound request.
+    # allow_localhost=True in test mode so `ag402 pay http://localhost:8001/…` works.
+    url_check = validate_url_safety(url, allow_localhost=config.is_test_mode)
+    if not url_check.valid:
+        print(f"\n  {_red('✗')} Blocked: {url_check.error}")
+        print(f"  {_dim('Only HTTPS URLs to public hosts are allowed.')}\n")
+        return
+
     mode_str = _yellow("TEST") if config.is_test_mode else _green("LIVE")
 
     print()

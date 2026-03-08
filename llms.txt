@@ -26,10 +26,10 @@
 ## Packages
 
 Four composable packages:
-- `open402` -- Protocol standard (zero dependencies)
-- `ag402-core` -- Payment engine (wallet, limits, retry, CLI, monkey-patch SDK)
-- `ag402-mcp` -- HTTP gateway adapter (for API providers / seller side)
-- `ag402-client-mcp` -- MCP client adapter (for Claude Code, Cursor, OpenClaw / buyer side)
+- `open402` -- Protocol standard (zero dependencies). Parses/builds x402 headers, version negotiation
+- `ag402-core` -- Payment engine (wallet, limits, retry, CLI, monkey-patch SDK). 20+ CLI commands
+- `ag402-mcp` -- HTTP gateway adapter (for API providers / seller side). Persistent tx_hash dedup
+- `ag402-client-mcp` -- MCP client adapter (for Claude Code, Cursor, OpenClaw / buyer side). 3 MCP tools
 
 ## Quick Start
 

@@ -72,10 +72,12 @@ class PaymentProviderRegistry:
                 "Stripe payment provider is planned for V2. Stay tuned!"
             )
 
-        # 4. Nothing configured
+        # 4. Nothing configured — B3 FIX: actionable error message
         raise ConfigError(
-            "No payment provider could be auto-detected. "
-            "Set SOLANA_PRIVATE_KEY (or X402_MODE=test for testing)."
+            "No payment provider configured. "
+            "Set SOLANA_PRIVATE_KEY environment variable for production, "
+            "or set X402_MODE=test for development/testing. "
+            "Run 'ag402 setup' for interactive configuration."
         )
 
     @classmethod

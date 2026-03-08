@@ -43,6 +43,20 @@ PRIVATE_KEY_LOG_PATTERNS: list[str] = [
     "seed_phrase",
 ]
 
+# ---------------------------------------------------------------------------
+# Module-level private key store (S1-1: never written to os.environ)
+# ---------------------------------------------------------------------------
+_decrypted_private_key: str = ""
+
+
+def get_decrypted_private_key() -> str:
+    """Return the decrypted private key (if available).
+
+    This getter avoids exposing the key through os.environ, which would
+    leak it to child processes and crash dumps.
+    """
+    return _decrypted_private_key
+
 
 def _env_float(name: str, default: float, ceiling: float) -> float:
     """Read a float from env, clamped to ceiling."""
@@ -220,26 +234,38 @@ def load_config() -> X402Config:
 
     If SOLANA_PRIVATE_KEY is not set but an encrypted wallet.key exists,
     attempts to decrypt it using AG402_UNLOCK_PASSWORD (env or interactive).
+    The decrypted key is stored in a module-level variable (S1-1), NOT
+    in os.environ.
     """
     from ag402_core.env_manager import load_dotenv
 
     load_dotenv()  # ~/.ag402/.env → os.environ (no override)
 
     # Auto-decrypt wallet.key if plaintext key is not available
-    if not os.getenv("SOLANA_PRIVATE_KEY"):
+    if not os.getenv("SOLANA_PRIVATE_KEY") and not _decrypted_private_key:
         _try_decrypt_wallet_key()
 
-    return X402Config()
+    # Build config; if no env-var key, fall back to the module-level decrypted key
+    config = X402Config()
+    if not config.solana_private_key and _decrypted_private_key:
+        object.__setattr__(config, "solana_private_key", _decrypted_private_key)
+
+    return config
 
 
 def _try_decrypt_wallet_key() -> None:
-    """Attempt to decrypt ~/.ag402/wallet.key and inject into environment.
+    """Attempt to decrypt ~/.ag402/wallet.key into module-level storage.
+
+    S1-1 FIX: The decrypted key is stored in a module-level private variable
+    (_decrypted_private_key) instead of os.environ, preventing leakage to
+    child processes, crash dumps, and /proc/*/environ.
 
     Silent no-op if:
     - wallet.key does not exist
     - cryptography package is not installed
     - AG402_UNLOCK_PASSWORD is not set and stdin is not a tty
     """
+    global _decrypted_private_key
     import logging as _log
 
     wallet_path = os.getenv(
@@ -262,7 +288,8 @@ def _try_decrypt_wallet_key() -> None:
 
         password = get_unlock_password()
         private_key = decrypt_private_key(password, encrypted_data)
-        os.environ["SOLANA_PRIVATE_KEY"] = private_key
+        # S1-1: Store in module-level var, NOT os.environ
+        _decrypted_private_key = private_key
         _log.getLogger(__name__).info(
             "Private key loaded from encrypted wallet: %s", wallet_path
         )
@@ -271,8 +298,6 @@ def _try_decrypt_wallet_key() -> None:
             "cryptography not installed — cannot decrypt wallet.key"
         )
     except SystemExit:
-        # get_unlock_password raises SystemExit in non-interactive mode
-        # without AG402_UNLOCK_PASSWORD — this is expected, not an error
         _log.getLogger(__name__).debug(
             "No unlock password available — skipping wallet.key decryption"
         )

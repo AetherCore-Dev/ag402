@@ -11,6 +11,7 @@ P1-RECEIPT-REUSE: Added grace window support — previously consumed tx_hashes c
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -205,9 +206,18 @@ class PersistentReplayGuard:
             self._db = None
 
     async def _ensure_db(self) -> None:
-        """Lazy-init DB connection if not yet initialized."""
-        if self._db is None:
-            await self.init_db()
+        """Lazy-init DB connection if not yet initialized.
+
+        Uses an asyncio.Lock to prevent concurrent callers from both
+        running init_db() (which would cause 'database is locked' errors).
+        """
+        if self._db is not None:
+            return
+        if not hasattr(self, "_init_lock"):
+            self._init_lock = asyncio.Lock()
+        async with self._init_lock:
+            if self._db is None:
+                await self.init_db()
 
     async def check_tx_status(self, tx_hash: str) -> TxHashStatus:
         """Check the status of a tx_hash without recording it.

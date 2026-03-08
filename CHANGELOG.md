@@ -5,7 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.12] - 2026-03-06
+## [0.1.13] - 2026-03-08
+
+### Security
+
+- **S1-1 Private key removed from env**: Decrypted private key no longer stored in `os.environ`; kept in module-level `_decrypted_private_key` with `get_decrypted_private_key()` getter in `config.py`
+- **S1-2 Mode-aware host binding**: Gateway and CLI bind to `127.0.0.1` in test mode, `0.0.0.0` in production — prevents accidental test instance exposure
+- **S1-3 Strict mock payment verification**: `MockSolanaAdapter.verify_payment()` only accepts tx_hashes recorded by `.pay()` — removes `mock_tx_` prefix fallback
+- **S2-1 Minimal health endpoint**: `/health` returns only `{"status":"healthy"}` in production mode — no `target_url` or metrics leakage
+- **S2-2 Temp directory permissions**: `os.chmod(tmpdir, 0o700)` applied in both `cli.py::_cmd_run` and `runners/base.py::_create_sitecustomize`
+
+### Fixed
+
+- **B1 Event loop crash**: Added `loop="asyncio"` to uvicorn in `cli.py`, `gateway.py`, and `bridge.py` — prevents `uvloop` import failures on macOS/Windows
+- **B2 ATA error detection**: `SolanaAdapter.pay()` now detects missing Associated Token Account and returns a friendly error message instead of raw RPC error
+- **B3 Improved ConfigError**: `registry.py` error message now mentions `SOLANA_PRIVATE_KEY` env var and `ag402 setup` command for quick resolution
+
+### Changed
+
+- Version bumped to `0.1.13`
+- 17 new TDD security tests in `test_security_fixes_v013.py`
+- Test suite: **588 passed**, 0 failed
+
+## [0.1.12] - 2026-03-07
+
+### Fixed
+
+- **Version sync**: All 4 packages (open402, ag402-core, ag402-mcp, ag402-client-mcp) now at 0.1.12
+- **CLI crash**: `ag402 env init` called `_cmd_setup()` without required args — fixed
+- **Docker**: Dockerfile now includes `examples/` so `weather-api` service starts correctly
+- **docker-compose**: Added `--app-dir` for correct module resolution in container
+
+### Security
+
+- **SSRF protection (core)**: `ag402 pay` now validates target URL via `validate_url_safety()` — blocks private IPs, non-HTTPS, reserved ranges (localhost allowed in test mode only)
+- **RateLimiter bounded**: Added `max_keys` limit (default 10,000) and periodic sweep to prevent unbounded memory growth under DDoS
+
+### Changed
+
+- **BudgetGuard circuit breaker**: Refactored from class-level (global mutable) state to instance-level `CircuitBreaker` object. Each BudgetGuard instance owns its own breaker by default; pass a shared `CircuitBreaker` when cross-instance sharing is needed. Eliminates test pollution and multi-process state confusion.
+- **CLI status**: Circuit breaker display now shows configuration parameters instead of runtime state (which only exists in the gateway process)
+
+### Removed
+
+- `issues-ag402.md` — all tracked issues were resolved; file was stale
 
 ### Security (ag402-skill)
 
