@@ -330,7 +330,7 @@ class TestAtomicWalletFileWrite:
 
     def test_save_creates_directory(self, tmp_path):
         path = str(tmp_path / "subdir" / "wallet.key")
-        data = encrypt_private_key("password_ok1", "key123")
+        data = encrypt_private_key("password_ok1!", "key123")
         save_encrypted_wallet(path, data)
         assert os.path.exists(path)
 
@@ -338,11 +338,11 @@ class TestAtomicWalletFileWrite:
         path = str(tmp_path / "wallet.key")
 
         # Write first version
-        data1 = encrypt_private_key("password_v1", "key1")
+        data1 = encrypt_private_key("password_v1_ok", "key1")
         save_encrypted_wallet(path, data1)
 
         # Write second version (should atomically replace)
-        data2 = encrypt_private_key("password_v2", "key2")
+        data2 = encrypt_private_key("password_v2_ok", "key2")
         save_encrypted_wallet(path, data2)
 
         loaded = load_encrypted_wallet(path)
@@ -350,16 +350,16 @@ class TestAtomicWalletFileWrite:
 
         # First password should NOT work on the new file
         with pytest.raises(Exception):
-            decrypt_private_key("password_v1", loaded)
+            decrypt_private_key("password_v1_ok", loaded)
 
         # Second password should work
-        decrypted = decrypt_private_key("password_v2", loaded)
+        decrypted = decrypt_private_key("password_v2_ok", loaded)
         assert decrypted == "key2"
 
     def test_file_permissions(self, tmp_path):
         """On Unix, the saved file should have 0o600 permissions."""
         path = str(tmp_path / "wallet.key")
-        data = encrypt_private_key("password_ok2", "key123")
+        data = encrypt_private_key("password_ok2!", "key123")
         save_encrypted_wallet(path, data)
 
         if os.name != "nt":
@@ -416,9 +416,14 @@ class TestPasswordStrengthValidation:
         with pytest.raises(ValueError, match="at least"):
             encrypt_private_key("1234567", "some_private_key")
 
-    def test_8_char_password_accepted(self):
-        """Exactly 8 characters should be the minimum accepted."""
-        result = encrypt_private_key("12345678", "some_private_key")
+    def test_11_char_password_rejected(self):
+        """11 characters should be rejected (minimum is 12)."""
+        with pytest.raises(ValueError, match="at least"):
+            encrypt_private_key("12345678901", "some_private_key")
+
+    def test_12_char_password_accepted(self):
+        """Exactly 12 characters should be the minimum accepted."""
+        result = encrypt_private_key("123456789012", "some_private_key")
         assert "salt" in result
         assert "encrypted_key" in result
 

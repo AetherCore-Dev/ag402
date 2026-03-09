@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 # PBKDF2 iteration count — OWASP 2023 recommendation for SHA256
 _PBKDF2_ITERATIONS = 480_000
 
-# Minimum password length for wallet encryption
-_MIN_PASSWORD_LENGTH = 8
+# Minimum password length for wallet encryption (NIST 800-63B recommends >= 12)
+_MIN_PASSWORD_LENGTH = 12
 
 
 def secure_zero(buf: bytearray) -> None:
@@ -74,7 +74,7 @@ def encrypt_private_key(password: str, private_key: str) -> dict[str, str]:
     Returns a dict with 'salt' (hex) and 'encrypted_key' (base64) suitable
     for JSON serialisation and storage on disk.
 
-    Raises ValueError if password is too short (< 8 characters).
+    Raises ValueError if password is too short (< 12 characters).
     """
     if not password or len(password) < _MIN_PASSWORD_LENGTH:
         raise ValueError(

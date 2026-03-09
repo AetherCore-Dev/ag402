@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `wipe_from_memory()` upgraded to use `secure_zero()` for bytearrays
   - 14 new dedicated tests in `test_memory_safety.py`
   - Full backward compatibility preserved — all existing APIs still accept `str`
+- **Wallet password minimum length raised from 8 to 12 characters** (NIST 800-63B recommendation). Salt size (16 bytes / 128 bit) and encryption algorithm (Fernet/AES-128-CBC + HMAC-SHA256) are already standards-compliant and unchanged
 
 ### Fixed
 
