@@ -7,7 +7,7 @@
 | # | Issue | Category | Priority | Difficulty | Status |
 |---|-------|----------|----------|------------|--------|
 | 1 | Private key memory safety | Security | Critical | High | **FIXED** |
-| 2 | Monkey patch fragility | Architecture | Critical | High | Pending |
+| 2 | Monkey patch fragility | Architecture | Critical | High | **FIXED** |
 | 3 | E2E test coverage gaps | Quality | High | Medium | Pending |
 | 4 | CI/CD workflow duplication | Engineering | High | Low | Pending |
 | 5 | Weak password policy & crypto params | Security | High | Medium | Pending |

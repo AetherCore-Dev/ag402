@@ -344,3 +344,48 @@ class TestMiddlewareInitRace:
         )
 
         await wallet.close()
+
+
+class TestDisableCleanup:
+    """Ensure disable() clears middleware state so re-enable gets fresh config."""
+
+    def test_disable_clears_middleware(self):
+        """disable() at depth=0 must set _middleware to None."""
+        ag402_core.enable()
+        assert monkey_mod._middleware is not None
+        ag402_core.disable()
+        assert monkey_mod._middleware is None, (
+            "disable() did not clear _middleware — re-enable would reuse stale state"
+        )
+
+    def test_disable_clears_thread_pool(self):
+        """disable() at depth=0 must shut down and clear _thread_pool."""
+        ag402_core.enable()
+        # Simulate that _thread_pool was created (normally only in Jupyter/async)
+        import concurrent.futures
+        monkey_mod._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        ag402_core.disable()
+        assert monkey_mod._thread_pool is None, (
+            "disable() did not clear _thread_pool"
+        )
+
+    def test_nested_disable_preserves_middleware(self):
+        """Nested disable() (depth > 0) must NOT clear middleware."""
+        ag402_core.enable()
+        ag402_core.enable()  # depth=2
+        mw = monkey_mod._middleware
+        ag402_core.disable()  # depth=1, still active
+        assert monkey_mod._middleware is mw, (
+            "Nested disable() cleared middleware while still active"
+        )
+
+    def test_reenable_gets_fresh_middleware(self):
+        """After disable+enable cycle, middleware should be freshly created."""
+        ag402_core.enable()
+        old_mw = monkey_mod._middleware
+        ag402_core.disable()
+        ag402_core.enable()
+        new_mw = monkey_mod._middleware
+        assert new_mw is not old_mw, (
+            "Re-enable reused old middleware instead of creating fresh one"
+        )

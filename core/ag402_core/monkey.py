@@ -35,6 +35,7 @@ _original_httpx_send: Any = None
 _original_requests_send: Any = None
 _middleware: Any = None  # X402PaymentMiddleware instance (lazy-created)
 _middleware_init_lock: asyncio.Lock | None = None  # async lock for init serialization
+_thread_pool: Any = None  # shared ThreadPoolExecutor for sync→async bridging
 
 # Re-entrancy guard: prevents middleware's own httpx requests from being
 # intercepted by _patched_send, which would cause infinite recursion.
@@ -83,7 +84,7 @@ def disable() -> None:
     Decrements the reference counter. Patches are only removed when the
     counter reaches zero. Safe to call even if not currently enabled (no-op).
     """
-    global _enable_depth
+    global _enable_depth, _middleware, _middleware_init_lock, _thread_pool
     with _lock:
         if _enable_depth <= 0:
             return
@@ -95,6 +96,11 @@ def disable() -> None:
 
         _unpatch_httpx()
         _unpatch_requests()
+        _middleware = None
+        _middleware_init_lock = None
+        if _thread_pool is not None:
+            _thread_pool.shutdown(wait=False)
+            _thread_pool = None
     logger.info("Ag402 disabled — original HTTP behavior restored")
 
 
@@ -363,17 +369,19 @@ def _patch_requests() -> None:
 
             if loop is not None and loop.is_running():
                 # Already in an async context — schedule as a task using a thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(
-                        lambda: asyncio.run(_handle_payment_for_requests(
-                            method=request.method or "GET",
-                            url=request.url or "",
-                            headers=dict(request.headers) if request.headers else {},
-                            body=request.body,
-                        ))
-                    )
-                    result = future.result(timeout=60)
+                global _thread_pool
+                if _thread_pool is None:
+                    import concurrent.futures
+                    _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = _thread_pool.submit(
+                    lambda: asyncio.run(_handle_payment_for_requests(
+                        method=request.method or "GET",
+                        url=request.url or "",
+                        headers=dict(request.headers) if request.headers else {},
+                        body=request.body,
+                    ))
+                )
+                result = future.result(timeout=60)
             else:
                 # No running loop — safe to use asyncio.run()
                 result = asyncio.run(_handle_payment_for_requests(
