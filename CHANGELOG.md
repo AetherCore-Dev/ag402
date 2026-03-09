@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Monkey patch resource leak**: Replaced per-request `ThreadPoolExecutor` creation in `requests` sync→async bridge with a module-level shared instance, preventing thread pool churn in Jupyter/async environments
 - **Monkey patch stale state**: `disable()` now clears middleware, init lock, and thread pool when reference count reaches zero, ensuring `re-enable()` with different config gets a fresh middleware instance
 - 4 new tests in `test_monkey.py` for disable cleanup behavior
+- **CI workflow deduplication**: Removed 3 duplicate workflow files (`pip-audit.yml`, `trivy.yml`, `semgrep.yml`) — all security scans consolidated into single `security.yml`. Removed redundant `test` job from `security.yml` (testing is `ci.yml`'s responsibility)
 
 ## [0.1.14] - 2026-03-08
 

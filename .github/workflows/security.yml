@@ -11,25 +11,8 @@ permissions:
   security-events: write
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install -e "protocol/[dev]" -e "core/[dev]" -e "adapters/mcp/[dev]" -e "adapters/client_mcp/[dev]"
-
-      - name: Run tests
-        run: make test || pytest
-
   pip-audit:
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +31,6 @@ jobs:
 
   trivy:
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +50,6 @@ jobs:
 
   semgrep:
     runs-on: ubuntu-latest
-    needs: test
     container:
       image: semgrep/semgrep
     steps:

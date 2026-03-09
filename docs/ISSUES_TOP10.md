@@ -8,8 +8,8 @@
 |---|-------|----------|----------|------------|--------|
 | 1 | Private key memory safety | Security | Critical | High | **FIXED** |
 | 2 | Monkey patch fragility | Architecture | Critical | High | **FIXED** |
-| 3 | E2E test coverage gaps | Quality | High | Medium | Pending |
-| 4 | CI/CD workflow duplication | Engineering | High | Low | Pending |
+| 3 | E2E test coverage gaps | Quality | High | Medium | **WONTFIX** |
+| 4 | CI/CD workflow duplication | Engineering | High | Low | **FIXED** |
 | 5 | Weak password policy & crypto params | Security | High | Medium | Pending |
 | 6 | RPC failover & resource management | Reliability | High | Medium | Pending |
 | 7 | Overly broad exception handling | DX | Medium | Medium | Pending |
