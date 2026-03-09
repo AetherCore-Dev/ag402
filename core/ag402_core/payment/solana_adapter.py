@@ -97,7 +97,7 @@ class SolanaAdapter(BasePaymentProvider):
             "Private key loaded into Keypair object (source buffer wiped if bytearray)."
         )
 
-    def _reconnect_client(self) -> None:
+    async def _reconnect_client(self) -> None:
         """Reconnect to the current endpoint (after failover).
 
         Closes the old client to prevent httpx session leaks.
@@ -108,12 +108,7 @@ class SolanaAdapter(BasePaymentProvider):
         )
         if old_client is not None:
             with contextlib.suppress(Exception):
-                # Schedule close on the running event loop (best-effort).
-                # AsyncClient.close() is async, but _reconnect_client is called
-                # from sync context within an async flow — fire-and-forget is safe
-                # here since we only need to release the httpx connection pool.
-                loop = asyncio.get_running_loop()
-                loop.create_task(old_client.close())
+                await old_client.close()
 
     # -- BasePaymentProvider interface --------------------------------------
 
@@ -278,7 +273,7 @@ class SolanaAdapter(BasePaymentProvider):
                 # Try failover endpoint before giving up
                 new_url = self._endpoint_mgr.failover()
                 if new_url:
-                    self._reconnect_client()
+                    await self._reconnect_client()
                     blockhash_resp = await asyncio.wait_for(
                         self._client.get_latest_blockhash(),
                         timeout=self._confirm_timeout,
@@ -327,7 +322,7 @@ class SolanaAdapter(BasePaymentProvider):
             except Exception:
                 new_url = self._endpoint_mgr.failover()
                 if new_url:
-                    self._reconnect_client()
+                    await self._reconnect_client()
                     resp = await asyncio.wait_for(
                         self._client.send_transaction(txn, opts=opts),
                         timeout=self._confirm_timeout,
@@ -435,7 +430,7 @@ class SolanaAdapter(BasePaymentProvider):
             # Failover to backup endpoint
             new_url = self._endpoint_mgr.failover()
             if new_url:
-                self._reconnect_client()
+                await self._reconnect_client()
                 try:
                     return await self._check_balance_impl()
                 except Exception:
