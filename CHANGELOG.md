@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 4 new tests in `test_monkey.py` for disable cleanup behavior
 - **CI workflow deduplication**: Removed 3 duplicate workflow files (`pip-audit.yml`, `trivy.yml`, `semgrep.yml`) — all security scans consolidated into single `security.yml`. Removed redundant `test` job from `security.yml` (testing is `ci.yml`'s responsibility)
 - **RPC failover resource leak**: `SolanaAdapter._reconnect_client()` now closes the old `AsyncClient` before creating a new one, preventing httpx session leaks on endpoint failover
+- **Exception handling diagnostics**: Added `exc_info=True` traceback to `pay()` and `verify_payment()` catch-all blocks; added missing `logger.error` to `pay()` catch-all (previously silent)
 
 ## [0.1.14] - 2026-03-08
 

@@ -12,10 +12,10 @@
 | 4 | CI/CD workflow duplication | Engineering | High | Low | **FIXED** |
 | 5 | Weak password policy & crypto params | Security | High | Medium | **FIXED** |
 | 6 | RPC failover & resource management | Reliability | High | Medium | **FIXED** |
-| 7 | Overly broad exception handling | DX | Medium | Medium | Pending |
-| 8 | Incomplete demo/FTUE experience | UX | Medium | Low | Pending |
-| 9 | Multi-package version coordination | Engineering | Medium | Medium | Pending |
-| 10 | Seller gateway lacks production ops | Ops | Medium | Medium | Pending |
+| 7 | Overly broad exception handling | DX | Medium | Medium | **FIXED** |
+| 8 | Incomplete demo/FTUE experience | UX | Medium | Low | **WONTFIX** |
+| 9 | Multi-package version coordination | Engineering | Medium | Medium | **WONTFIX** |
+| 10 | Seller gateway lacks production ops | Ops | Medium | Medium | **WONTFIX** |
 
 ---
 
@@ -99,3 +99,7 @@
 |------|-------|--------|---------|
 | 2026-03-09 | — | Created | Initial issue list from full project audit |
 | 2026-03-09 | #1 | **FIXED** | Private key memory safety — bytearray + secure_zero(ctypes.memset), 14 tests, 0 regressions |
+| 2026-03-10 | #7 | **FIXED** | Exception handling — added exc_info traceback to pay()/verify_payment() catch-all blocks, added missing logger.error to pay() catch-all |
+| 2026-03-10 | #8 | **WONTFIX** | Demo/FTUE — `ag402 demo` already fully implemented (mock/localnet/devnet), only README terminal GIF missing (needs manual recording) |
+| 2026-03-10 | #9 | **WONTFIX** | Version coordination — core 4 packages already synced at 0.1.14, publish.yml correctly orchestrated, current scale doesn't need automated tooling |
+| 2026-03-10 | #10 | **WONTFIX** | Gateway ops — already has /health + graceful shutdown + Docker + in-memory metrics; Prometheus/structured logging are 1.0-level requirements |

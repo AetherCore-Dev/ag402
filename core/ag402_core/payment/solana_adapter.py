@@ -389,7 +389,7 @@ class SolanaAdapter(BasePaymentProvider):
             except Exception as confirm_err:
                 logger.warning(
                     "[CONFIRM] Confirmation wait failed (tx may still succeed): %s",
-                    confirm_err,
+                    confirm_err, exc_info=True,
                 )
 
             return PaymentResult(
@@ -399,6 +399,7 @@ class SolanaAdapter(BasePaymentProvider):
             )
 
         except Exception as exc:
+            logger.error("[PAY] Payment failed: %s", exc, exc_info=True)
             # B2 FIX: Detect ATA-related errors and provide friendly hints
             error_str = str(exc)
             error_lower = error_str.lower()
@@ -552,7 +553,7 @@ class SolanaAdapter(BasePaymentProvider):
             logger.error("[VERIFY] Timed out verifying tx %s", tx_hash[:16])
             return False
         except Exception as exc:
-            logger.error("[VERIFY] Verification failed for %s: %s", tx_hash[:16], exc)
+            logger.error("[VERIFY] Verification failed for %s: %s", tx_hash[:16], exc, exc_info=True)
             return False
 
     @staticmethod
