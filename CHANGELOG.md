@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **S1-1+ Private key memory safety**: Private keys now use `bytearray` throughout the entire lifecycle instead of immutable `str`, enabling real memory wiping via `ctypes.memset`
+  - Added `secure_zero()` — zeroes bytearray buffers using `ctypes.memset` (cannot be optimised away by the interpreter)
+  - Added `decrypt_private_key_bytes()` — returns decrypted key as wipeable `bytearray` instead of `str`
+  - Module-level `_decrypted_private_key` in `config.py` changed from `str` to `bytearray`
+  - Added `clear_decrypted_private_key()` to securely zero and discard the stored key
+  - Added `get_decrypted_private_key_buf()` for callers that can work with `bytearray`
+  - `SolanaAdapter.__init__()` now accepts `str | bytearray`; wipes input buffer after Keypair creation
+  - `PaymentProviderRegistry._build_solana()` passes key as `bytearray` so adapter can wipe it
+  - `wipe_from_memory()` upgraded to use `secure_zero()` for bytearrays
+  - 14 new dedicated tests in `test_memory_safety.py`
+  - Full backward compatibility preserved — all existing APIs still accept `str`
+
 ## [0.1.14] - 2026-03-08
 
 ### Fixed

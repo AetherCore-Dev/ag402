@@ -37,7 +37,7 @@ class SolanaAdapter(BasePaymentProvider):
 
     def __init__(
         self,
-        private_key: str,
+        private_key: str | bytearray,
         rpc_url: str = "https://api.devnet.solana.com",
         usdc_mint: str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         confirm_timeout: int = 30,
@@ -60,7 +60,16 @@ class SolanaAdapter(BasePaymentProvider):
 
         self._Pubkey = Pubkey
         self._AsyncClient = AsyncClient
-        self._keypair: Keypair = Keypair.from_base58_string(private_key)
+
+        # Accept both str and bytearray; wipe the mutable buffer after use.
+        key_str = private_key.decode("utf-8") if isinstance(private_key, bytearray) else private_key
+        self._keypair: Keypair = Keypair.from_base58_string(key_str)
+        del key_str
+        # If caller passed a bytearray, securely zero it now that Keypair holds the key.
+        if isinstance(private_key, bytearray):
+            from ag402_core.security.wallet_encryption import secure_zero
+            secure_zero(private_key)
+
         self._rpc_url = rpc_url
         self._usdc_mint = Pubkey.from_string(usdc_mint)
         self._confirm_timeout = confirm_timeout
@@ -84,8 +93,8 @@ class SolanaAdapter(BasePaymentProvider):
         self._priority_fee_microlamports = priority_fee_microlamports
         self._compute_unit_limit = compute_unit_limit
 
-        logger.warning(
-            "Private key loaded into memory. Consider using HSM in production."
+        logger.info(
+            "Private key loaded into Keypair object (source buffer wiped if bytearray)."
         )
 
     def _reconnect_client(self) -> None:

@@ -28,6 +28,19 @@ _PBKDF2_ITERATIONS = 480_000
 _MIN_PASSWORD_LENGTH = 8
 
 
+def secure_zero(buf: bytearray) -> None:
+    """Securely zero out a bytearray using ctypes.memset.
+
+    Unlike a Python ``for`` loop, ctypes.memset cannot be optimised away by
+    the interpreter — the underlying C library call always writes zeroes.
+    """
+    if not isinstance(buf, bytearray) or len(buf) == 0:
+        return
+    import ctypes
+
+    ctypes.memset((ctypes.c_char * len(buf)).from_buffer(buf), 0, len(buf))
+
+
 def _import_crypto():
     """Lazy import cryptography — allows graceful degradation when not installed."""
     try:
@@ -84,6 +97,12 @@ def decrypt_private_key(password: str, encrypted_data: dict[str, str]) -> str:
     """Decrypt a private key using the user-provided password.
 
     Raises ``InvalidToken`` (from cryptography) if the password is wrong.
+
+    .. note::
+
+       Prefer :func:`decrypt_private_key_bytes` when the caller can work
+       with ``bytearray`` — it allows real memory wiping via
+       :func:`secure_zero`.
     """
     Fernet, _, _ = _import_crypto()
     salt = bytes.fromhex(encrypted_data["salt"])
@@ -91,6 +110,30 @@ def decrypt_private_key(password: str, encrypted_data: dict[str, str]) -> str:
     fernet = Fernet(key)
     decrypted = fernet.decrypt(encrypted_data["encrypted_key"].encode("utf-8"))
     return decrypted.decode("utf-8")
+
+
+def decrypt_private_key_bytes(password: str, encrypted_data: dict[str, str]) -> bytearray:
+    """Decrypt a private key into a **mutable** ``bytearray``.
+
+    Unlike :func:`decrypt_private_key` (which returns an immutable ``str``),
+    the returned ``bytearray`` can be securely zeroed after use via
+    :func:`secure_zero`.
+
+    Usage::
+
+        key_buf = decrypt_private_key_bytes(password, data)
+        try:
+            adapter = SolanaAdapter(private_key=key_buf)
+        finally:
+            secure_zero(key_buf)
+    """
+    Fernet, _, _ = _import_crypto()
+    salt = bytes.fromhex(encrypted_data["salt"])
+    key = _derive_key(password, salt)
+    fernet = Fernet(key)
+    decrypted = fernet.decrypt(encrypted_data["encrypted_key"].encode("utf-8"))
+    # Return as bytearray so caller can zero it after use
+    return bytearray(decrypted)
 
 
 def save_encrypted_wallet(path: str, encrypted_data: dict[str, str]) -> None:
@@ -131,7 +174,9 @@ def load_encrypted_wallet(path: str) -> dict[str, str] | None:
 def wipe_from_memory(value: str | bytearray) -> None:
     """Best-effort wipe of sensitive data from memory.
 
-    For ``bytearray`` objects, zeroes out the content in place (effective).
+    For ``bytearray`` objects, uses :func:`secure_zero` (ctypes.memset) to
+    overwrite the buffer with zeroes — this cannot be optimised away.
+
     For ``str`` objects, Python strings are immutable and cannot be truly
     erased — we can only delete the reference and request GC.
 
@@ -139,8 +184,7 @@ def wipe_from_memory(value: str | bytearray) -> None:
     so this function can actually zero out the memory.
     """
     if isinstance(value, bytearray):
-        for i in range(len(value)):
-            value[i] = 0
+        secure_zero(value)
     del value
     gc.collect()
 

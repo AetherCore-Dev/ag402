@@ -45,17 +45,45 @@ PRIVATE_KEY_LOG_PATTERNS: list[str] = [
 
 # ---------------------------------------------------------------------------
 # Module-level private key store (S1-1: never written to os.environ)
+# Uses bytearray so it can be securely zeroed via secure_zero().
 # ---------------------------------------------------------------------------
-_decrypted_private_key: str = ""
+_decrypted_private_key: bytearray = bytearray()
 
 
 def get_decrypted_private_key() -> str:
-    """Return the decrypted private key (if available).
+    """Return the decrypted private key as a string (if available).
 
     This getter avoids exposing the key through os.environ, which would
     leak it to child processes and crash dumps.
+
+    .. note::
+
+       Prefer :func:`get_decrypted_private_key_buf` when the caller can
+       work with ``bytearray`` — it avoids creating an immutable ``str``
+       copy that cannot be wiped.
     """
-    return _decrypted_private_key
+    if not _decrypted_private_key:
+        return ""
+    return _decrypted_private_key.decode("utf-8")
+
+
+def get_decrypted_private_key_buf() -> bytearray:
+    """Return a **copy** of the decrypted private key as ``bytearray``.
+
+    The caller is responsible for calling
+    :func:`ag402_core.security.wallet_encryption.secure_zero` on the
+    returned buffer when it is no longer needed.
+    """
+    return bytearray(_decrypted_private_key)
+
+
+def clear_decrypted_private_key() -> None:
+    """Securely zero and discard the module-level decrypted private key."""
+    global _decrypted_private_key
+    from ag402_core.security.wallet_encryption import secure_zero
+
+    secure_zero(_decrypted_private_key)
+    _decrypted_private_key = bytearray()
 
 
 def _env_float(name: str, default: float, ceiling: float) -> float:
@@ -248,7 +276,9 @@ def load_config() -> X402Config:
     # Build config; if no env-var key, fall back to the module-level decrypted key
     config = X402Config()
     if not config.solana_private_key and _decrypted_private_key:
-        object.__setattr__(config, "solana_private_key", _decrypted_private_key)
+        object.__setattr__(
+            config, "solana_private_key", _decrypted_private_key.decode("utf-8")
+        )
 
     return config
 
@@ -277,7 +307,7 @@ def _try_decrypt_wallet_key() -> None:
 
     try:
         from ag402_core.security.wallet_encryption import (
-            decrypt_private_key,
+            decrypt_private_key_bytes,
             get_unlock_password,
             load_encrypted_wallet,
         )
@@ -287,9 +317,8 @@ def _try_decrypt_wallet_key() -> None:
             return
 
         password = get_unlock_password()
-        private_key = decrypt_private_key(password, encrypted_data)
-        # S1-1: Store in module-level var, NOT os.environ
-        _decrypted_private_key = private_key
+        # S1-1+: Decrypt directly into bytearray (can be securely zeroed later)
+        _decrypted_private_key = decrypt_private_key_bytes(password, encrypted_data)
         _log.getLogger(__name__).info(
             "Private key loaded from encrypted wallet: %s", wallet_path
         )

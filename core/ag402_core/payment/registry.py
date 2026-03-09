@@ -82,7 +82,11 @@ class PaymentProviderRegistry:
 
     @classmethod
     def _build_solana(cls, config: X402Config) -> BasePaymentProvider:
-        """Construct a real ``SolanaAdapter`` (lazy imports solana-py)."""
+        """Construct a real ``SolanaAdapter`` (lazy imports solana-py).
+
+        Passes the private key as a ``bytearray`` so ``SolanaAdapter`` can
+        securely zero the buffer after loading it into a Keypair.
+        """
         from ag402_core.payment.solana_adapter import SolanaAdapter
 
         if not config.solana_private_key:
@@ -90,8 +94,10 @@ class PaymentProviderRegistry:
                 "SOLANA_PRIVATE_KEY is required for the Solana payment provider."
             )
 
+        # Wrap in bytearray so SolanaAdapter can wipe it after Keypair creation
+        key_buf = bytearray(config.solana_private_key.encode("utf-8"))
         return SolanaAdapter(
-            private_key=config.solana_private_key,
+            private_key=key_buf,
             rpc_url=config.effective_rpc_url,
             usdc_mint=config.usdc_mint_address,
             rpc_backup_url=config.solana_rpc_backup_url,
