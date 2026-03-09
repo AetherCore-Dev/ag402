@@ -11,7 +11,7 @@
 | 3 | E2E test coverage gaps | Quality | High | Medium | **WONTFIX** |
 | 4 | CI/CD workflow duplication | Engineering | High | Low | **FIXED** |
 | 5 | Weak password policy & crypto params | Security | High | Medium | **FIXED** |
-| 6 | RPC failover & resource management | Reliability | High | Medium | Pending |
+| 6 | RPC failover & resource management | Reliability | High | Medium | **FIXED** |
 | 7 | Overly broad exception handling | DX | Medium | Medium | Pending |
 | 8 | Incomplete demo/FTUE experience | UX | Medium | Low | Pending |
 | 9 | Multi-package version coordination | Engineering | Medium | Medium | Pending |

@@ -98,10 +98,22 @@ class SolanaAdapter(BasePaymentProvider):
         )
 
     def _reconnect_client(self) -> None:
-        """Reconnect to the current endpoint (after failover)."""
+        """Reconnect to the current endpoint (after failover).
+
+        Closes the old client to prevent httpx session leaks.
+        """
+        old_client = self._client
         self._client = self._AsyncClient(
             self._endpoint_mgr.current_url, commitment=self._confirmation_level
         )
+        if old_client is not None:
+            with contextlib.suppress(Exception):
+                # Schedule close on the running event loop (best-effort).
+                # AsyncClient.close() is async, but _reconnect_client is called
+                # from sync context within an async flow — fire-and-forget is safe
+                # here since we only need to release the httpx connection pool.
+                loop = asyncio.get_running_loop()
+                loop.create_task(old_client.close())
 
     # -- BasePaymentProvider interface --------------------------------------
 
