@@ -199,14 +199,40 @@ Your existing API runs untouched behind a reverse proxy. The proxy:
 | **RPC resilience** | **Multi-endpoint** | Exponential backoff → auto-failover to backup RPC → circuit breaker |
 | **Delivery guarantee** | **Async retry** | Payment succeeds but upstream fails? Background worker retries with backoff |
 
-### Prepaid System — From 500ms to 1ms
+### 🆕 Prepaid System — From 500ms to 1ms
+
+**The problem:** Standard x402 payments require an on-chain Solana transaction for every API call (~0.5s + gas fee). For high-frequency agents making hundreds of calls per hour, this adds up in both latency and cost.
+
+**The solution:** Buy a prepaid credit pack with one on-chain payment, then use HMAC credentials for subsequent calls — **zero gas, ~1ms latency**.
 
 ```
-Buy:  Agent → one Solana payment → gets HMAC credential (N calls / M days)
-Use:  Agent → X-Prepaid-Credential → local HMAC verify → 200 OK   ← no chain, ~1ms
+Buy:  Agent → one Solana payment → gets HMAC-SHA256 credential (N calls / M days)
+Use:  Agent → X-Prepaid-Credential header → local HMAC verify → 200 OK   ← no chain, ~1ms
 ```
 
-5 tiers from $1.50 (3d/100 calls) to $60 (730d/10K calls). Auto-fallback to standard x402 when exhausted.
+#### 5 Prepaid Tiers
+
+| Package | Duration | Calls | Price (USDC) | Cost per Call |
+|---------|----------|-------|-------------|---------------|
+| Starter | 3 days | 100 | $1.50 | $0.015 |
+| Basic | 7 days | 500 | $5.00 | $0.010 |
+| Pro | 30 days | 1,000 | $8.00 | $0.008 |
+| Business | 365 days | 5,000 | $35.00 | $0.007 |
+| Enterprise | 730 days | 10,000 | $60.00 | $0.006 |
+
+#### How it works
+
+1. **Buyer** purchases a prepaid pack → one Solana tx → receives HMAC credential
+2. **Each API call** includes `X-Prepaid-Credential` header → server verifies HMAC locally (~1ms)
+3. **No on-chain tx** needed per call → zero gas fees after initial purchase
+4. **Auto-fallback** to standard x402 payment when prepaid credits are exhausted
+
+#### Security
+
+- HMAC-SHA256 signatures prevent credential forgery
+- Constant-time comparison prevents timing attacks
+- Credentials are scoped per buyer-seller pair
+- Server-side cache (5 min TTL) for repeat verification
 
 ---
 
@@ -379,6 +405,45 @@ pip install ag402-core ag402-mcp && ag402 serve --target http://your-api:8000 --
 - [GitHub Discussions](https://github.com/AetherCore-Dev/ag402/discussions) — questions, ideas, show & tell
 - [Issue Tracker](https://github.com/AetherCore-Dev/ag402/issues) — bug reports, feature requests
 - [Contributing Guide](CONTRIBUTING.md) — PRs welcome, see "Good First Issues"
+
+---
+
+## Roadmap
+
+| Milestone | Status | Description |
+|-----------|--------|-------------|
+| ✅ Solana USDC payments | **Shipped** | Standard x402 on-chain payments (~0.5s) |
+| ✅ Prepaid system | **Shipped** | HMAC credentials, ~1ms, zero gas per call |
+| ✅ Claude Code / Cursor / OpenClaw | **Shipped** | One-command install, native MCP support |
+| ✅ 4 security audits | **Shipped** | 24/24 issues fixed, 588+ tests |
+| 🔜 **TypeScript SDK** | **Next** | `ag402-ts` — bring x402 payments to the JS/TS ecosystem. Express/Fastify middleware, Vercel/Cloudflare edge support |
+| 🔜 Multi-chain | Planned | Base, Polygon, Arbitrum USDC support |
+| 🔜 Stripe fallback | Planned | Fiat payment fallback for non-crypto users |
+| 🔜 Dashboard | Planned | Web UI for sellers — revenue, analytics, API keys |
+
+### TypeScript SDK (Coming Soon)
+
+The next major milestone: **`ag402-ts`** — a TypeScript implementation of ag402 for the Node.js/Deno/Bun ecosystem.
+
+```typescript
+// Seller: Express middleware (coming soon)
+import { ag402 } from 'ag402-ts';
+
+app.use('/api', ag402({ price: '0.01', address: '<SolanaAddress>' }));
+
+// Buyer: Auto-pay fetch wrapper (coming soon)
+import { enableAutoPay } from 'ag402-ts/client';
+
+enableAutoPay(); // All 402 responses are auto-paid
+const data = await fetch('https://paid-api.example.com/data');
+```
+
+Why TypeScript?
+- MCP ecosystem is ~50% TypeScript (FastMCP-TS, official SDK)
+- Vercel/Cloudflare edge functions need native TS support
+- npm > PyPI in total package installs
+
+**Want to contribute or beta test?** [Open an issue](https://github.com/AetherCore-Dev/ag402/issues) or reach out on [X @AetherCoreDev](https://x.com/AetherCoreDev).
 
 ---
 
