@@ -36,6 +36,9 @@ _CREDENTIALS_FILE = _PREPAID_DIR / "prepaid_credentials.json"
 
 def _ensure_dir() -> None:
     _PREPAID_DIR.mkdir(parents=True, exist_ok=True)
+    # Restrict to owner only (Unix). No-op on Windows.
+    with contextlib.suppress(OSError, NotImplementedError):
+        os.chmod(_PREPAID_DIR, 0o700)
 
 
 def _load() -> list[dict]:
@@ -45,8 +48,16 @@ def _load() -> list[dict]:
     try:
         with open(_CREDENTIALS_FILE) as f:
             return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        logger.warning("[PREPAID] Failed to load credentials file — treating as empty")
+    except (OSError, json.JSONDecodeError) as exc:
+        # Back up the corrupt file before treating as empty — prevents silent data loss
+        backup = _CREDENTIALS_FILE.with_suffix(".json.bak")
+        with contextlib.suppress(OSError):
+            import shutil
+            shutil.copy2(_CREDENTIALS_FILE, backup)
+        logger.warning(
+            "[PREPAID] Corrupt credentials file (%s) — backed up to %s, starting fresh",
+            exc, backup,
+        )
         return []
 
 

@@ -117,6 +117,14 @@ class X402Gateway:
         # Falls back to AG402_PREPAID_SIGNING_KEY env var if not passed explicitly.
         _signing_key = prepaid_signing_key or os.getenv("AG402_PREPAID_SIGNING_KEY", "")
         if _signing_key and self.address:
+            # Warn on weak keys (minimum 32 chars recommended for HMAC-SHA256)
+            if len(_signing_key) < 32:
+                logger.warning(
+                    "[GATEWAY] Prepaid signing key is short (%d chars). "
+                    "Recommend >= 32 random characters. "
+                    "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\"",
+                    len(_signing_key),
+                )
             self._prepaid_verifier: PrepaidVerifier | None = PrepaidVerifier(
                 signing_key=_signing_key,
                 seller_address=self.address,
@@ -554,7 +562,9 @@ def cli_main() -> None:
         default="",
         help=(
             "HMAC signing key for X-Prepaid-Credential verification "
-            "(or set AG402_PREPAID_SIGNING_KEY env var)"
+            "(or set AG402_PREPAID_SIGNING_KEY env var). "
+            "Recommend >= 32 random chars: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
         ),
     )
     parser.add_argument(
