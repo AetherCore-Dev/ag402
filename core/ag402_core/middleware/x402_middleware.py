@@ -435,7 +435,18 @@ class X402PaymentMiddleware:
 
         # Send request with credential header (outside lock — network I/O)
         prepaid_headers = dict(headers)
-        prepaid_headers["X-Prepaid-Credential"] = cred.to_header_value()
+        try:
+            prepaid_headers["X-Prepaid-Credential"] = cred.to_header_value()
+        except Exception:
+            # Malformed stored credential — rollback deduction and fall through to on-chain
+            async with self._payment_lock:
+                rollback_call(seller_address, cred)
+            logger.warning(
+                "[PREPAID] Failed to serialize credential for %s — "
+                "rolled back, falling through to on-chain x402",
+                seller_address[:24],
+            )
+            return None
 
         t0 = time.monotonic()
         try:

@@ -2261,7 +2261,11 @@ async def _cmd_prepaid_buy(args) -> None:
             print(f"  {_red('✗')} Gateway returned {resp.status_code}\n")
             return
 
-        packages = {p["package_id"]: p for p in resp.json().get("packages", [])}
+        try:
+            packages_body = resp.json()
+            packages = {p["package_id"]: p for p in (packages_body.get("packages", []) if isinstance(packages_body, dict) else [])}
+        except Exception:
+            packages = {}
 
     if package_id not in packages:
         available = ", ".join(packages.keys())
@@ -2323,7 +2327,11 @@ async def _cmd_prepaid_buy(args) -> None:
             print(f"  {_red('✗')} Gateway rejected purchase ({resp.status_code}): {body.get('detail') or body.get('error', 'unknown')}\n")
             return
 
-        cred_data = resp.json().get("credential", {})
+        try:
+            body_json = resp.json()
+            cred_data = body_json.get("credential", {}) if isinstance(body_json, dict) else {}
+        except Exception:
+            cred_data = {}
 
     try:
         cred = PrepaidCredential.from_dict(cred_data)
