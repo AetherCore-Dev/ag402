@@ -227,6 +227,48 @@ Use:  Agent → X-Prepaid-Credential header → local HMAC verify → 200 OK   �
 3. **No on-chain tx** needed per call → zero gas fees after initial purchase
 4. **Auto-fallback** to standard x402 payment when prepaid credits are exhausted
 
+#### Quick Start (Buyer)
+
+```bash
+# Step 1: Browse available packages from any ag402 gateway
+ag402 prepaid buy https://your-gateway.example.com --list
+
+# Step 2: Purchase a pack (test mode — zero config, zero cost)
+ag402 prepaid buy https://your-gateway.example.com starter
+
+# Step 3: Check your credentials
+ag402 prepaid status
+
+# That's it — subsequent API calls through the middleware automatically use the credential
+```
+
+In **production mode** (real USDC), `ag402 prepaid buy` will:
+1. Show the package price and seller address
+2. Ask `Confirm payment? [Y/n]`
+3. Broadcast the USDC on-chain automatically
+4. Store the credential at `~/.ag402/prepaid_credentials.json`
+
+```bash
+# Manage credentials
+ag402 prepaid status   # View all credentials grouped by seller (calls remaining / expiry)
+ag402 prepaid purge    # Remove expired or depleted credentials
+```
+
+#### Seller Setup
+
+```bash
+# Start gateway with prepaid support (generates a signing key if not set)
+ag402-gateway --target http://localhost:8000 \
+              --price 0.01 \
+              --address <YourSolanaAddress> \
+              --prepaid-signing-key <secret-key>
+
+# Or via environment variable
+AG402_PREPAID_SIGNING_KEY=<secret-key> ag402-gateway ...
+```
+
+Buyers can then discover packages at `GET /prepaid/packages` and purchase at `POST /prepaid/purchase`.
+
 #### Security
 
 - HMAC-SHA256 signatures prevent credential forgery
