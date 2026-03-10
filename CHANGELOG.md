@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.16] - 2026-03-10
+
+### Added
+
+- **Prepaid documentation** — README quick start for buyers/sellers, llms.txt CLI reference with all 5 package IDs, `AG402_PREPAID_SIGNING_KEY` env var doc
+- **`examples/prepaid_demo.py`** — full end-to-end prepaid demo: browse packages, purchase in test mode, store credential, API calls via prepaid path, check remaining calls
+
+### Fixed
+
+- **Credential serialization safety** (`x402_middleware.py`): `to_header_value()` now wrapped in try/except — malformed stored credential rolls back deduction and falls through to on-chain x402 instead of crashing
+- **CLI JSON guard** (`cli.py`): `resp.json()` calls in `prepaid buy` now guarded against non-JSON / non-dict gateway responses (packages list + credential extraction)
+- **Credential file permissions** (`client.py`): `~/.ag402/` directory set to `0o700` on Unix to prevent world-readable credential files
+- **Corrupt credentials backup** (`client.py`): corrupt credentials file is backed up to `.json.bak` before treating as empty — prevents silent data loss
+- **Weak signing key warning** (`gateway.py`): logs warning when `--prepaid-signing-key` is shorter than 32 chars; includes `secrets.token_hex(32)` keygen hint
+- **Import sort** (`test_memory_safety.py`): fix ruff I001 lint error introduced by upstream commit
+- **Example API fix** (`prepaid_demo.py`): corrected 4 wrong API calls (non-existent `PrepaidCredentialStore`, `middleware.send()`, `result.get()`)
+
+### Changed
+
+- Test suite: **88 passed**, 0 failed
+
+
 
 ### Security
 

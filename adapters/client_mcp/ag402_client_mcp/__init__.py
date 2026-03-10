@@ -4,7 +4,7 @@ Allows Claude Code, Cursor, OpenClaw and any MCP-compatible AI tool
 to automatically pay for HTTP 402 APIs via the x402 protocol.
 """
 
-__version__ = "0.1.15"
+__version__ = "0.1.16"
 
 from ag402_client_mcp.server import Ag402MCPServer
 

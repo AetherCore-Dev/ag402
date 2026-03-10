@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-client-mcp"
-version = "0.1.15"
+version = "0.1.16"
 description = "Ag402 MCP Client — expose x402 auto-payment as MCP Tools for Claude Code, Cursor, OpenClaw and more"
 license = {text = "MIT"}
 requires-python = ">=3.10"
