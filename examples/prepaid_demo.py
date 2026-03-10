@@ -33,7 +33,8 @@ from ag402_core.config import RunMode, X402Config
 from ag402_core.gateway.auth import PaymentVerifier
 from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
 from ag402_core.payment.solana_adapter import MockSolanaAdapter
-from ag402_core.prepaid.client import PrepaidCredentialStore
+from ag402_core.prepaid import client as prepaid_client
+from ag402_core.prepaid.models import PrepaidCredential
 from ag402_core.wallet.agent_wallet import AgentWallet
 from ag402_mcp.gateway import X402Gateway
 
@@ -162,12 +163,11 @@ async def run_demo() -> None:
 
     # ---- Step 3: Store credential (buyer side) ----
     print("\n  ── STEP 3: Store credential locally ──")
-    store = PrepaidCredentialStore()
-    from ag402_core.prepaid.models import PrepaidCredential
     cred = PrepaidCredential.from_dict(credential_json)
-    store.add_credential(cred)
+    prepaid_client.add_credential(cred)
+    all_creds = prepaid_client.get_all_credentials()
     log("store", f"Stored at ~/.ag402/prepaid_credentials.json  "
-        f"({store.count()} credential(s) total)")
+        f"({len(all_creds)} credential(s) total)")
 
     # ---- Step 4: Make API calls using the prepaid credential ----
     print("\n  ── STEP 4: Make API calls — prepaid path (~1ms) ──")
@@ -182,7 +182,7 @@ async def run_demo() -> None:
     call_times = []
     for i in range(1, 4):
         t0 = time.perf_counter()
-        result = await middleware.send(
+        result = await middleware.handle_request(
             method="GET",
             url=f"{gateway_url}/weather",
             headers={},
@@ -190,8 +190,8 @@ async def run_demo() -> None:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         call_times.append(elapsed_ms)
 
-        payment_type = "prepaid" if result.get("prepaid") else "on-chain"
-        log("call", f"  Call {i}: {result.get('status', '?')}  "
+        payment_type = "prepaid" if result.tx_hash == "prepaid" else "on-chain"
+        log("call", f"  Call {i}: HTTP {result.status_code}  "
             f"via {payment_type}  {elapsed_ms:.1f}ms")
 
     avg_ms = sum(call_times) / len(call_times)
@@ -199,8 +199,7 @@ async def run_demo() -> None:
 
     # ---- Step 5: Check remaining calls ----
     print("\n  ── STEP 5: Credential status after use ──")
-    all_creds = store.get_all_credentials()
-    for c in all_creds:
+    for c in prepaid_client.get_all_credentials():
         if c.seller_address == SELLER_ADDRESS:
             log("status", f"  {c.package_id}: {c.remaining_calls} calls remaining  "
                 f"expires {str(c.expires_at)[:10]}")
