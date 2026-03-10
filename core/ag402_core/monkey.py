@@ -273,10 +273,13 @@ def _patch_httpx() -> None:
             )
 
             if result.payment_made:
-                logger.info(
-                    "[ag402] Paid $%.4f %s — tx: %s",
-                    result.amount_paid, challenge.token, result.tx_hash[:16],
-                )
+                if result.tx_hash == "prepaid":
+                    logger.info("[ag402] Prepaid credential used — %s", challenge.token)
+                else:
+                    logger.info(
+                        "[ag402] Paid $%.4f %s — tx: %s",
+                        result.amount_paid, challenge.token, result.tx_hash[:16],
+                    )
 
             # Build a new httpx.Response from the middleware result
             return httpx.Response(
@@ -395,10 +398,13 @@ def _patch_requests() -> None:
                 return response
 
             if result.payment_made:
-                logger.info(
-                    "[ag402] Paid $%.4f %s — tx: %s",
-                    result.amount_paid, challenge.token, result.tx_hash[:16],
-                )
+                if result.tx_hash == "prepaid":
+                    logger.info("[ag402] Prepaid credential used — %s", challenge.token)
+                else:
+                    logger.info(
+                        "[ag402] Paid $%.4f %s — tx: %s",
+                        result.amount_paid, challenge.token, result.tx_hash[:16],
+                    )
 
             # Build a new requests.Response from the middleware result
             new_resp = requests.Response()

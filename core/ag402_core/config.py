@@ -220,6 +220,13 @@ class X402Config:
     # Registry (yellow pages)
     registry_url: str = field(default_factory=lambda: os.getenv("X402_REGISTRY_URL", ""))
 
+    # --- Prepaid ---
+    # Seller's signing key for HMAC credential verification (P0-2 gateway)
+    # Buyers: leave empty — they don't sign, they just present credentials.
+    prepaid_signing_key: str = field(
+        default_factory=lambda: os.getenv("AG402_PREPAID_SIGNING_KEY", ""), repr=False
+    )
+
     # --- PBE Wallet Encryption ---
     unlock_password: str = field(
         default_factory=lambda: os.getenv("AG402_UNLOCK_PASSWORD", ""), repr=False

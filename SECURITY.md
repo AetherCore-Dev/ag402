@@ -110,6 +110,20 @@ TDD-driven security hardening — 17 new tests written first (red), then code im
 
 Total: **588 tests** passing, 0 regressions.
 
+## V1.9 Security Fixes (v0.1.15, 2026-03-10)
+
+Prepaid system hardening — buyer-side HMAC credential flow + gateway-side verifier:
+
+| ID | Severity | Fix |
+|----|----------|-----|
+| P1 | Medium | `PrepaidVerifier`: `signature=null` / non-string input returns `invalid_signature` instead of crash |
+| P2 | Medium | `/prepaid/purchase` endpoint now protected by `_rate_limiter` (was bypassed previously) |
+| P3 | Low | DNS rebinding: `addr.is_link_local` added to `_is_private_address()` for Python 3.10 compat |
+| P4 | Low | `ag402 prepaid buy` (production mode): explicit `[Y/n]` confirmation gate before irreversible on-chain broadcast |
+| P5 | Low | `ag402 prepaid buy`: gateway-supplied price validated against `cfg.single_tx_limit` before broadcast |
+
+Total: **648+ tests** passing, 0 regressions.
+
 ## Responsible Disclosure
 
 We follow a responsible disclosure process. After a fix is available, we will:

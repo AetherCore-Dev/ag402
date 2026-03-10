@@ -196,6 +196,13 @@ class X402PaymentMiddleware:
                 error=f"Challenge validation failed: {validation.error}",
             )
 
+        # 4.5. Try prepaid path first (1ms local verify, skips on-chain payment)
+        prepaid_result = await self._try_prepaid(
+            challenge.address, method, url, req_headers, body
+        )
+        if prepaid_result is not None:
+            return prepaid_result
+
         # 5-6. Budget check + deduct under lock to prevent TOCTOU race
         # (multiple concurrent requests could otherwise all pass budget check
         # before any deduction is recorded, exceeding the budget)
@@ -388,6 +395,104 @@ class X402PaymentMiddleware:
             url=url,
             headers=headers,
             content=body,
+        )
+
+    async def _try_prepaid(
+        self,
+        seller_address: str,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+    ) -> MiddlewareResult | None:
+        """Attempt payment via local Prepaid Credential (1ms, no chain call).
+
+        Flow:
+        1. check_and_deduct under _payment_lock (prevents concurrent over-deduction)
+        2. Send request with X-Prepaid-Credential header
+        3. Seller accepts (non-402) → return result
+        4. Seller rejects (402) → rollback deduction, return None to fall back on-chain
+
+        Returns MiddlewareResult on success, None to fall back to on-chain x402.
+        """
+        import time
+
+        try:
+            from ag402_core.prepaid.client import check_and_deduct, rollback_call
+        except ImportError:
+            return None  # prepaid module unavailable — silent no-op
+
+        # Deduct under lock to prevent TOCTOU with concurrent requests
+        async with self._payment_lock:
+            success, cred = check_and_deduct(seller_address)
+
+        if not success or cred is None:
+            logger.info(
+                "[FALLBACK] No prepaid credential for %s — using on-chain x402",
+                seller_address[:24],
+            )
+            return None
+
+        # Send request with credential header (outside lock — network I/O)
+        prepaid_headers = dict(headers)
+        prepaid_headers["X-Prepaid-Credential"] = cred.to_header_value()
+
+        t0 = time.monotonic()
+        try:
+            response = await self._send(method, url, prepaid_headers, body)
+        except Exception:
+            # Network error (timeout, DNS failure, connection reset, etc.) —
+            # roll back the deducted call under the lock to prevent concurrent
+            # rollbacks from clobbering each other, then re-raise.
+            async with self._payment_lock:
+                rollback_call(seller_address, cred)
+            logger.warning(
+                "[PREPAID] Network error sending prepaid request — "
+                "rolled back deducted call for %s",
+                seller_address[:24],
+            )
+            raise
+        elapsed_ms = (time.monotonic() - t0) * 1000
+
+        if response.status_code == 402:
+            # Seller rejected our credential — roll back the deduction under lock
+            # to prevent concurrent rollbacks from clobbering each other, then
+            # fall through to standard on-chain x402 payment.
+            async with self._payment_lock:
+                rollback_call(seller_address, cred)
+            logger.warning(
+                "[PREPAID] Credential rejected by seller (402) — "
+                "rolling back, falling back to on-chain x402",
+            )
+            return None
+
+        if response.status_code >= 500 or response.status_code == 429:
+            # Upstream error (5xx) or rate limit (429) — the request was not
+            # served. Roll back the deducted call so the buyer doesn't lose it,
+            # then return the error response as-is (no on-chain fallback).
+            async with self._payment_lock:
+                rollback_call(seller_address, cred)
+            logger.warning(
+                "[PREPAID] Upstream returned %d — rolled back deducted call for %s",
+                response.status_code, seller_address[:24],
+            )
+            return MiddlewareResult(
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                body=response.content,
+            )
+
+        logger.info(
+            "[PREPAID] \u2713 %.1fms local verify (seller: %s, remaining: %d)",
+            elapsed_ms, seller_address[:24], cred.remaining_calls,
+        )
+        return MiddlewareResult(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            body=response.content,
+            payment_made=True,
+            tx_hash="prepaid",
+            amount_paid=0.0,
         )
 
     def _wrap_response(self, response: httpx.Response) -> MiddlewareResult:

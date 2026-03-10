@@ -40,11 +40,16 @@ def _is_local_address(hostname: str) -> bool:
 
 
 def _is_private_address(hostname: str) -> bool:
-    """Check if a hostname is a private/reserved IP (SSRF protection)."""
+    """Check if a hostname is a private/reserved IP (SSRF protection).
+
+    Blocks private, reserved, loopback, and link-local addresses.
+    Link-local (169.254.x.x / fe80::/10) includes cloud metadata endpoints
+    such as the AWS/GCP instance metadata service at 169.254.169.254.
+    """
     bare = hostname.strip("[]")
     try:
         addr = ipaddress.ip_address(bare)
-        return addr.is_private or addr.is_reserved or addr.is_loopback
+        return addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local
     except ValueError:
         return False
 
@@ -123,7 +128,7 @@ def validate_url_safety(url: str, *, allow_localhost: bool = False) -> Challenge
                 resolved_ip = sockaddr[0]
                 try:
                     addr = ipaddress.ip_address(resolved_ip)
-                    if addr.is_private or addr.is_reserved or addr.is_loopback:
+                    if addr.is_private or addr.is_reserved or addr.is_loopback or addr.is_link_local:
                         return ChallengeValidation(
                             valid=False,
                             error=f"DNS rebinding blocked — '{hostname}' resolved to private address {resolved_ip}",

@@ -122,8 +122,14 @@ Devnet tested (17 on-chain tests + 28 resilience tests + 4 devnet timing tests).
 - **solana_adapter.py**: `SolanaAdapter` (real) + `MockSolanaAdapter` (test). Configurable `confirmation_level` ("confirmed"/"finalized") for chain reorg protection. Uses `round()` for lamport conversion to avoid float precision errors. **Retry + Failover**: RPC calls (`get_latest_blockhash`, `send_transaction`) are wrapped with `retry_with_backoff` (exponential backoff, configurable `max_rpc_retries`). On retry exhaustion, auto-failovers to `rpc_backup_url` via `MultiEndpointClient`. Returns `confirmation_status` ("confirmed" | "sent") in `PaymentResult`.
 - **retry.py**: `retry_with_backoff()` — async retry with exponential backoff (configurable max_retries, base_delay, max_delay). `MultiEndpointClient` — multi-RPC endpoint manager with sequential failover and primary reset. Both integrated into `SolanaAdapter` for production use.
 
+#### Prepaid (`prepaid/`) — NEW in P0-1, seller-side in P0-2
+- **models.py**: `PrepaidCredential` dataclass. 5 package tiers (Starter 100c/3d → Enterprise 10k c/730d). UTC-aware datetimes with `_utc()` backward-compat helper. HMAC-SHA256 signature covers `buyer|package|expires_at` (excludes `remaining_calls` — decrements locally)
+- **client.py**: Buyer-side JSON store at `~/.ag402/prepaid_credentials.json`. Atomic write via `tempfile+os.replace()`. All `from_dict()` calls catch `(KeyError, ValueError, TypeError)` for corrupt-entry resilience. `rollback_call()` capped at original package limit to prevent reject-loop inflation
+- **verifier.py** (NEW in P0-2): Stateless `PrepaidVerifier` for seller/gateway side. 5-step: parse → seller_address match → expiry → remaining_calls > 0 → HMAC. `hmac.compare_digest()` for constant-time comparison. `remaining_calls` excluded from HMAC (buyer manages locally)
+- Prepaid fast-path in `x402_middleware._try_prepaid()`: 1ms local verify vs 500ms+ on-chain. `check_and_deduct` + `rollback_call` both under `_payment_lock` (TOCTOU + concurrent-rollback safe). 429/5xx upstream → rollback (buyer gets service or refund)
+
 #### Middleware (`middleware/`)
-- **x402_middleware.py**: Core loop: Intercept 402 -> parse -> budget -> deduct -> pay -> retry -> rollback. Dual-mode fallback (non-x402 402 -> Bearer API key). Replay header injection. Integrated PaymentOrder state machine for payment lifecycle tracking (CREATED → LOCAL_DEDUCTED → CHAIN_BROADCASTED → DELIVERING → SUCCESS/REFUNDED). Point-of-no-return semantics: after chain broadcast, local deductions are never rolled back. **Budget-deduct lock**: asyncio.Lock serializes budget check + deduct to prevent TOCTOU race.
+- **x402_middleware.py**: Core loop: Intercept 402 -> parse -> budget -> **prepaid fast-path** -> deduct -> pay -> retry -> rollback. **Prepaid path** (`_try_prepaid`): check local credential under lock → attach `X-Prepaid-Credential` header → on seller rejection or network error, rollback under lock and fall through to on-chain. Dual-mode fallback (non-x402 402 -> Bearer API key). Replay header injection. Integrated PaymentOrder state machine for payment lifecycle tracking (CREATED → LOCAL_DEDUCTED → CHAIN_BROADCASTED → DELIVERING → SUCCESS/REFUNDED). Point-of-no-return semantics: after chain broadcast, local deductions are never rolled back. **Budget-deduct lock**: asyncio.Lock serializes budget check + deduct to prevent TOCTOU race.
 - **budget_guard.py**: Single-tx limit + per-minute limit + daily limit + circuit breaker + balance check. All configurable via env with hard ceilings.
 
 #### Security (`security/`)
@@ -137,7 +143,8 @@ Devnet tested (17 on-chain tests + 28 resilience tests + 4 devnet timing tests).
 - **auth.py**: `PaymentVerifier` for server-side proof validation
 
 #### CLI (`cli.py`)
-- **18 commands**: `setup`, `init`, `run`, `env`, `serve`, `pay`, `upgrade`, `help`, `status`, `balance`, `history`, `tx`, `config`, `info`, `doctor`, `demo`, `export`
+- **19 commands**: `setup`, `init`, `run`, `env`, `serve`, `pay`, `prepaid`, `upgrade`, `help`, `status`, `balance`, `history`, `tx`, `config`, `info`, `doctor`, `demo`, `export`, `mcp`, `mcp-config`, `install`
+- **Prepaid management** (NEW in P0-3): `ag402 prepaid status` / `ag402 prepaid purge` / `ag402 prepaid buy <gateway_url> <package_id>`
 - **Interactive setup wizard**: `ag402 setup` (role selection + encryption + budget)
 - **Agent integration**: `ag402 run -- python agent.py`
 - **Config management**: `ag402 env show/set`
@@ -152,8 +159,10 @@ Devnet tested (17 on-chain tests + 28 resilience tests + 4 devnet timing tests).
 ### Layer 3: ag402-mcp (`adapters/mcp/ag402_mcp/`)
 - **gateway.py**: HTTP gateway adapter with CLI entry point (`ag402-gateway`)
 - Wraps any API with x402 payment verification
+- **Prepaid fast-path** (NEW in P0-2): `X-Prepaid-Credential` header processed before on-chain auth. Valid credential → proxy immediately (1ms). Invalid/expired/depleted → 402 with standard x402 challenge so buyer falls back to on-chain. Enabled via `--prepaid-signing-key` CLI arg or `AG402_PREPAID_SIGNING_KEY` env var
+- **Prepaid purchase endpoints** (NEW in P0-3): `GET /prepaid/packages` (public, 5 tiers) + `POST /prepaid/purchase` (verify tx_hash → issue signed credential JSON). `tx_hash` validated `[A-Za-z0-9_-]{1,128}` (header injection prevention). Credential returned to buyer, not stored on seller.
 - **Production mode safety**: Refuses to start without real verifier when `X402_MODE=production`; prominent test mode warning banner
-- **GET /health endpoint**: Returns JSON with status, mode, uptime, and metrics counters (requests_total, payments_verified, payments_rejected, replays_rejected, challenges_issued, proxy_errors)
+- **GET /health endpoint**: Returns JSON with status, mode, uptime, and metrics counters (requests_total, payments_verified, payments_rejected, replays_rejected, challenges_issued, proxy_errors, prepaid_verified, prepaid_rejected)
 - **Header whitelist**: Only forwards known-safe headers (accept, content-type, user-agent, etc.) to upstream; blocks Cookie, X-Forwarded-For, Connection
 - **tx_hash deduplication**: Atomic `INSERT OR IGNORE` in persistent SQLite-backed `PersistentReplayGuard` (survives restarts). Eliminates TOCTOU race in concurrent requests.
 - **Shared httpx client**: Created/closed via lifespan, with fallback per-request client for non-lifespan usage

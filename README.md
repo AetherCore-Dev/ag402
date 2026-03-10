@@ -9,7 +9,7 @@
     <a href="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml"><img src="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/tests-588%2B_passing-brightgreen" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-648%2B_passing-brightgreen" alt="Tests" />
     <img src="https://img.shields.io/badge/coverage-90%25+-brightgreen" alt="Coverage" />
     <img src="https://img.shields.io/badge/security_audits-4_rounds-blue" alt="Security Audits" />
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python" />
@@ -52,7 +52,7 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 
 ### Battle-tested
 - [Token RugCheck](https://github.com/AetherCore-Dev/token-rugcheck) — **live on Solana mainnet** with real USDC payments
-- 588+ tests, 90%+ coverage, 4 security audits (24/24 issues fixed)
+- 648+ tests, 90%+ coverage, 4 security audits (24/24 issues fixed)
 - Multi-endpoint RPC failover + circuit breaker + async delivery retry
 
 ### Blazing fast
@@ -240,7 +240,7 @@ Use:  Agent → X-Prepaid-Credential header → local HMAC verify → 200 OK   �
 
 Your agent holds private keys and moves real USDC. Security is not a feature — it's the foundation.
 
-**4 rounds of security audits** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 588+ total tests · 90%+ coverage
+**4 rounds of security audits** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 648+ total tests · 90%+ coverage
 
 ### 6-Layer Budget Protection
 
@@ -267,7 +267,7 @@ Your agent holds private keys and moves real USDC. Security is not a feature —
 
 ### CI Pipeline (Every PR)
 
-CodeQL · Trivy · pip-audit · Semgrep · 588+ tests · 90%+ coverage · OpenSSF Scorecard
+CodeQL · Trivy · pip-audit · Semgrep · 648+ tests · 90%+ coverage · OpenSSF Scorecard
 
 ---
 

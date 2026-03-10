@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 
 import httpx
 from ag402_core.gateway.auth import PaymentVerifier
+from ag402_core.prepaid.verifier import PrepaidVerifier
 from ag402_core.security.rate_limiter import RateLimiter
 from ag402_core.security.replay_guard import (
     PersistentReplayGuard,
@@ -34,9 +36,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from open402.headers import build_www_authenticate
 from open402.spec import X402PaymentChallenge, X402ServiceDescriptor
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+class _PrepaidPurchaseRequest(BaseModel):
+    buyer_address: str
+    package_id: str
+    tx_hash: str
 
 class X402Gateway:
     """Wraps any HTTP API/MCP server and adds x402 payment gate."""
@@ -52,6 +60,7 @@ class X402Gateway:
         replay_window: int = 30,
         replay_db_path: str = "",
         rate_limit_per_minute: int = 60,
+        prepaid_signing_key: str = "",
     ):
         self.target_url = target_url.rstrip("/")
         self.price = price
@@ -79,7 +88,6 @@ class X402Gateway:
                 "PaymentVerifier with a payment provider. Either provide a "
                 "'verifier' argument or set X402_MODE=test for development."
             )
-        self._replay_guard = ReplayGuard(window_seconds=replay_window)
         # Persistent tx_hash deduplication (survives restarts)
         self._replay_db_path = replay_db_path or os.path.expanduser("~/.ag402/gateway_replay.db")
         self._persistent_guard = PersistentReplayGuard(db_path=self._replay_db_path)
@@ -99,8 +107,28 @@ class X402Gateway:
             "replays_rejected": 0,
             "challenges_issued": 0,
             "proxy_errors": 0,
+            "prepaid_verified": 0,
+            "prepaid_rejected": 0,
             "started_at": time.time(),
         }
+
+        # P0-2: Prepaid credential verifier (seller side).
+        # Enabled when prepaid_signing_key is non-empty.
+        # Falls back to AG402_PREPAID_SIGNING_KEY env var if not passed explicitly.
+        _signing_key = prepaid_signing_key or os.getenv("AG402_PREPAID_SIGNING_KEY", "")
+        if _signing_key and self.address:
+            self._prepaid_verifier: PrepaidVerifier | None = PrepaidVerifier(
+                signing_key=_signing_key,
+                seller_address=self.address,
+            )
+            logger.info("[GATEWAY] Prepaid credential verification enabled")
+        else:
+            self._prepaid_verifier = None
+            if not _signing_key:
+                logger.info(
+                    "[GATEWAY] Prepaid verification disabled "
+                    "(set AG402_PREPAID_SIGNING_KEY to enable)"
+                )
 
         # Build the service descriptor for 402 challenges
         self._service = X402ServiceDescriptor(
@@ -185,8 +213,109 @@ class X402Gateway:
                     "replays_rejected": self._metrics["replays_rejected"],
                     "challenges_issued": self._metrics["challenges_issued"],
                     "proxy_errors": self._metrics["proxy_errors"],
+                    "prepaid_verified": self._metrics["prepaid_verified"],
+                    "prepaid_rejected": self._metrics["prepaid_rejected"],
                 },
             })
+
+        # P0-3: Prepaid purchase endpoints (not gated behind payment)
+
+        @app.get("/prepaid/packages")
+        async def list_packages() -> JSONResponse:
+            """Return available prepaid package tiers and prices."""
+            from ag402_core.prepaid.models import PACKAGES
+            return JSONResponse(content={
+                "packages": [
+                    {
+                        "package_id": pkg_id,
+                        "name": info["name"],
+                        "calls": info["calls"],
+                        "days": info["days"],
+                        "price_usdc": info["price"],
+                        "token": self.token,
+                        "seller_address": self.address,
+                    }
+                    for pkg_id, info in PACKAGES.items()
+                ]
+            })
+
+        @app.post("/prepaid/purchase")
+        async def purchase_package(request: Request, body: _PrepaidPurchaseRequest) -> JSONResponse:
+            """Verify on-chain USDC payment and issue a prepaid credential.
+
+            In test mode, tx_hash is accepted as-is without on-chain check.
+            In production mode, the verifier validates the transaction.
+            """
+            client_ip = request.client.host if request.client else "unknown"
+            if not self._rate_limiter.allow(client_ip):
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "Too Many Requests", "detail": "Rate limit exceeded"},
+                )
+
+            if not self._prepaid_verifier:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Prepaid purchase not enabled on this gateway"},
+                )
+
+            from ag402_core.prepaid.models import PACKAGES
+            pkg = PACKAGES.get(body.package_id)
+            if pkg is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "invalid_package", "detail": f"Unknown package_id: {body.package_id!r}"},
+                )
+
+            # Verify on-chain payment (test mode: accepted if well-formed)
+            # Validate tx_hash before embedding in Authorization header string
+            # (prevents header injection via crafted tx_hash values)
+            if not re.fullmatch(r"[A-Za-z0-9_\-]{1,128}", body.tx_hash):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "invalid_tx_hash", "detail": "tx_hash contains invalid characters"},
+                )
+            # Use legacy x402 format: "x402 <tx_hash>" — compatible with PaymentVerifier
+            expected_amount = float(pkg["price"])
+            pay_result = await self.verifier.verify(
+                f"x402 {body.tx_hash}",
+                expected_amount=expected_amount,
+                expected_address=self.address,
+            )
+            if not pay_result.valid:
+                logger.warning("[GATEWAY] Purchase payment rejected: %s", pay_result.error)
+                return JSONResponse(
+                    status_code=402,
+                    content={"error": "payment_verification_failed", "detail": pay_result.error},
+                )
+
+            # Issue credential — build only, do NOT store on seller side
+            # (seller returns JSON; buyer calls add_credential() locally)
+            from datetime import datetime
+            from datetime import timezone as _tz
+
+            from ag402_core.prepaid.client import _compute_hmac
+            from ag402_core.prepaid.models import PrepaidCredential, calculate_expiry
+            _signing_key = self._prepaid_verifier._signing_key
+            expires_at = calculate_expiry(pkg["days"])
+            signature = _compute_hmac(_signing_key, body.buyer_address, body.package_id, expires_at)
+            cred = PrepaidCredential(
+                buyer_address=body.buyer_address,
+                package_id=body.package_id,
+                remaining_calls=pkg["calls"],
+                expires_at=expires_at,
+                signature=signature,
+                seller_address=self.address,
+                created_at=datetime.now(_tz.utc),
+            )
+            logger.info(
+                "[GATEWAY] Issued prepaid credential: buyer=%s package=%s calls=%d",
+                body.buyer_address[:24], body.package_id, cred.remaining_calls,
+            )
+            return JSONResponse(
+                status_code=201,
+                content={"credential": cred.to_dict()},
+            )
 
         @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
         async def gateway_handler(request: Request, path: str) -> Response:
@@ -204,6 +333,29 @@ class X402Gateway:
                 )
 
             authorization = request.headers.get("authorization", "")
+
+            # 0.5. P0-2: Prepaid credential fast-path (1ms local verify, no chain call)
+            prepaid_header = request.headers.get("x-prepaid-credential", "")
+            if prepaid_header and self._prepaid_verifier is not None:
+                result = self._prepaid_verifier.verify(prepaid_header)
+                if result.valid:
+                    self._metrics["prepaid_verified"] += 1
+                    logger.info("[GATEWAY] Prepaid credential accepted — proxying")
+                    try:
+                        return await self._proxy_request(request, path)
+                    except Exception as exc:
+                        self._metrics["proxy_errors"] += 1
+                        logger.error("[GATEWAY] Proxy error (prepaid): %s", exc)
+                        return JSONResponse(status_code=502, content={"error": "Bad Gateway"})
+                else:
+                    # Invalid prepaid → fall through to standard 402 so buyer retries on-chain
+                    logger.info(
+                        "[GATEWAY] Prepaid credential rejected (%s) — returning 402",
+                        result.error,
+                    )
+                    self._metrics["prepaid_rejected"] += 1
+                    self._metrics["challenges_issued"] += 1
+                    return self._build_402_response()
 
             # 1. Check for Authorization header
             if not authorization:
@@ -398,6 +550,14 @@ def cli_main() -> None:
         help="Recipient wallet address for payments",
     )
     parser.add_argument(
+        "--prepaid-signing-key",
+        default="",
+        help=(
+            "HMAC signing key for X-Prepaid-Credential verification "
+            "(or set AG402_PREPAID_SIGNING_KEY env var)"
+        ),
+    )
+    parser.add_argument(
         "--chain",
         default="solana",
         help="Blockchain network (default: solana)",
@@ -439,6 +599,7 @@ def cli_main() -> None:
         chain=args.chain,
         token=args.token,
         address=args.address,
+        prepaid_signing_key=args.prepaid_signing_key,
     )
     app = gateway.create_app()
 

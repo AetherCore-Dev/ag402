@@ -202,6 +202,17 @@ def _build_parser() -> argparse.ArgumentParser:
     pay_p.add_argument("-X", "--method", default="GET", help="HTTP method (default: GET)")
     pay_p.add_argument("--db", default=_DEFAULT_DB, help="Wallet database path")
 
+    # --- prepaid (NEW — prepaid credential management) ---
+    prepaid_p = sub.add_parser("prepaid", help="Manage prepaid credentials")
+    prepaid_sub = prepaid_p.add_subparsers(dest="prepaid_action")
+    prepaid_sub.add_parser("status", help="Show all prepaid credentials and remaining calls")
+    prepaid_sub.add_parser("purge", help="Remove expired and depleted credentials")
+    buy_p = prepaid_sub.add_parser("buy", help="Purchase a prepaid package from a gateway")
+    buy_p.add_argument("gateway_url", help="Gateway URL (e.g. http://localhost:8001)")
+    buy_p.add_argument("package_id", help="Package ID (e.g. p30d_1000)")
+    buy_p.add_argument("--buyer-address", default="",
+                       help="Buyer wallet address (default: use configured wallet)")
+
     # --- export ---
     exp_p = sub.add_parser("export", help="Export transaction history to file")
     exp_p.add_argument("--db", default=_DEFAULT_DB, help="Wallet database path")
@@ -257,6 +268,7 @@ def main() -> None:
             "doctor": _cmd_doctor,
             "demo": lambda: asyncio.run(_cmd_demo(_resolve_demo_mode(args))),
             "pay": lambda: asyncio.run(_cmd_pay(args.url, args.method, args.db)),
+            "prepaid": lambda: asyncio.run(_cmd_prepaid(args)),
             "export": lambda: asyncio.run(_cmd_export(args.db, args.format, args.output)),
         }
 
@@ -2159,5 +2171,168 @@ async def _cmd_export(db_path: str, fmt: str, output: str) -> None:
     await wallet.close()
 
 
+# ─── Prepaid commands ─────────────────────────────────────────────────────
+
+
+async def _cmd_prepaid(args) -> None:
+    """Dispatch ag402 prepaid <action>."""
+    action = getattr(args, "prepaid_action", None)
+    if action == "status":
+        _cmd_prepaid_status()
+    elif action == "purge":
+        _cmd_prepaid_purge()
+    elif action == "buy":
+        await _cmd_prepaid_buy(args)
+    else:
+        # No sub-action: show status
+        _cmd_prepaid_status()
+
+
+def _cmd_prepaid_status() -> None:
+    """Show all prepaid credentials and remaining calls."""
+    from ag402_core.prepaid.client import get_prepaid_status
+    status = get_prepaid_status()
+
+    print()
+    print(f"  {_bold('Prepaid Credentials')}")
+    print(f"  {'─' * 48}")
+    print(f"  Total stored  : {status['total_credentials']}")
+    print(f"  Valid         : {status['valid_credentials']}")
+    print(f"  Total calls   : {status['total_remaining_calls']}")
+
+    by_seller = status.get("by_seller", {})
+    if not by_seller:
+        print(f"\n  {_dim('No valid credentials. Use `ag402 prepaid buy` to purchase one.')}")
+    else:
+        print()
+        for seller, creds in by_seller.items():
+            print(f"  {_cyan('Seller')} {_dim(seller[:32] + ('...' if len(seller) > 32 else ''))}")
+            for c in creds:
+                calls = c["remaining_calls"]
+                exp = c["expires_at"][:10]  # YYYY-MM-DD
+                pkg = c["package_id"]
+                print(f"    {_green('●')} {pkg:16s}  {_bold(str(calls)):>6} calls  expires {exp}")
+    print()
+
+
+def _cmd_prepaid_purge() -> None:
+    """Remove expired and depleted credentials."""
+    from ag402_core.prepaid.client import purge_invalid_credentials
+    removed = purge_invalid_credentials()
+    if removed:
+        print(f"\n  {_green('✓')} Removed {removed} expired/depleted credential(s).\n")
+    else:
+        print(f"\n  {_dim('Nothing to purge — all credentials are valid.')}\n")
+
+
+async def _cmd_prepaid_buy(args) -> None:
+    """Purchase a prepaid package from a gateway."""
+    import httpx
+
+    from ag402_core.prepaid.client import add_credential
+    from ag402_core.prepaid.models import PrepaidCredential
+
+    gateway_url = args.gateway_url.rstrip("/")
+    package_id = args.package_id
+    buyer_address = args.buyer_address
+
+    # If no buyer_address provided, try to read from wallet config
+    if not buyer_address:
+        from ag402_core.config import load_config
+        cfg = load_config()
+        buyer_address = getattr(cfg, "solana_public_key", "") or ""
+        if not buyer_address:
+            print(f"\n  {_red('✗')} No buyer address. Pass --buyer-address or configure AG402_PUBLIC_KEY.\n")
+            return
+
+    print()
+    print(f"  {_bold('Prepaid Purchase')}")
+    print(f"  {'─' * 48}")
+    print(f"  ① Fetching packages from {gateway_url} …")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(f"{gateway_url}/prepaid/packages")
+        except Exception as exc:
+            print(f"  {_red('✗')} Cannot reach gateway: {exc}\n")
+            return
+
+        if resp.status_code != 200:
+            print(f"  {_red('✗')} Gateway returned {resp.status_code}\n")
+            return
+
+        packages = {p["package_id"]: p for p in resp.json().get("packages", [])}
+
+    if package_id not in packages:
+        available = ", ".join(packages.keys())
+        print(f"  {_red('✗')} Unknown package {package_id!r}. Available: {available}\n")
+        return
+
+    pkg = packages[package_id]
+    price = pkg["price_usdc"]
+    calls = pkg["calls"]
+    days = pkg["days"]
+    seller_address = pkg["seller_address"]
+    print(f"  ② Package: {_bold(pkg['name'])} — {calls} calls / {days} days / {_bold(str(price))} USDC")
+    print(f"  ③ Seller: {_dim(seller_address[:40])}")
+
+    # In test mode, synthesize a mock tx_hash so the flow works end-to-end
+    from ag402_core.config import load_config
+    cfg = load_config()
+    if cfg.is_test_mode:
+        import time as _time
+        tx_hash = f"prepaid_purchase_{int(_time.time())}"
+        print(f"  ④ {_yellow('Test mode')} — using synthetic tx_hash: {_dim(tx_hash)}")
+    else:
+        price_float = float(price)
+        if price_float > cfg.single_tx_limit:
+            print(f"  {_red('✗')} Package price ${price_float} exceeds single-tx limit ${cfg.single_tx_limit}.\n")
+            return
+        print(f"  ④ About to broadcast {_bold(str(price))} USDC → {_dim(seller_address[:40])}")
+        confirm = input("     Confirm payment? [Y/n] ").strip().lower()
+        if confirm and confirm != "y":
+            print(f"  {_yellow('⚠')} Cancelled.\n")
+            return
+        from ag402_core.payment.registry import PaymentProviderRegistry
+        try:
+            provider = PaymentProviderRegistry.get_provider()
+        except Exception as exc:
+            print(f"  {_red('✗')} Cannot load payment provider: {exc}\n")
+            return
+        pay_result = await provider.pay(to_address=seller_address, amount=price_float, token="USDC")
+        if not pay_result.success:
+            print(f"  {_red('✗')} Payment failed: {pay_result.error}\n")
+            return
+        tx_hash = pay_result.tx_hash
+        print(f"  ④ {_green('✓')} Broadcast — tx: {_dim(tx_hash[:44])}")
+
+    print("  ⑤ Submitting purchase to gateway …")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(
+                f"{gateway_url}/prepaid/purchase",
+                json={"buyer_address": buyer_address, "package_id": package_id, "tx_hash": tx_hash},
+            )
+        except Exception as exc:
+            print(f"  {_red('✗')} Purchase request failed: {exc}\n")
+            return
+
+        if resp.status_code not in (200, 201):
+            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            print(f"  {_red('✗')} Gateway rejected purchase ({resp.status_code}): {body.get('detail') or body.get('error', 'unknown')}\n")
+            return
+
+        cred_data = resp.json().get("credential", {})
+
+    try:
+        cred = PrepaidCredential.from_dict(cred_data)
+    except Exception as exc:
+        print(f"  {_red('✗')} Invalid credential in response: {exc}\n")
+        return
+
+    add_credential(cred)
+    print(f"  {_green('✓')} Credential stored — {_bold(str(cred.remaining_calls))} calls, expires {cred.expires_at.date()}")
+    print("     Use `ag402 prepaid status` to view all credentials.\n")
 if __name__ == "__main__":
     main()

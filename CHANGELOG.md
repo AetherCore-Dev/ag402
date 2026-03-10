@@ -31,6 +31,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RPC failover resource leak**: `SolanaAdapter._reconnect_client()` now closes the old `AsyncClient` before creating a new one, preventing httpx session leaks on endpoint failover
 - **Exception handling diagnostics**: Added `exc_info=True` traceback to `pay()` and `verify_payment()` catch-all blocks; added missing `logger.error` to `pay()` catch-all (previously silent)
 
+## [0.1.15] - 2026-03-10
+
+### Added
+
+- **Production-mode auto-broadcast** (`ag402 prepaid buy`) — `_cmd_prepaid_buy` now calls `PaymentProviderRegistry.get_provider().pay()` in production mode instead of prompting for manual tx_hash input
+  - Test mode: auto-generates synthetic tx_hash for zero-config end-to-end testing
+  - Production mode: confirms with user → broadcasts USDC on-chain → submits tx_hash to gateway automatically
+  - Price cap check: gateway-supplied price validated against `cfg.single_tx_limit` before broadcast
+  - Confirmation gate: irreversible payments require explicit `[Y/n]` prompt
+- **`GET /prepaid/packages`** gateway endpoint — publicly accessible, returns all 5 package tiers with calls/days/price/seller_address
+- **`POST /prepaid/purchase`** gateway endpoint — verifies tx_hash payment and issues HMAC-signed credential JSON
+  - `tx_hash` input validated against `[A-Za-z0-9_-]{1,128}` to prevent header injection
+  - Credential built but NOT stored on seller side (returned as JSON; buyer stores locally)
+  - Test mode: accepts any well-formed tx_hash without on-chain check
+- **`ag402 prepaid buy <gateway_url> <package_id>`** CLI command — full purchase flow
+- **`ag402 prepaid status`** CLI command — displays all credentials grouped by seller
+- **`ag402 prepaid purge`** CLI command — removes expired and depleted credentials
+- **`PrepaidVerifier`** (`ag402_core/prepaid/verifier.py`) — stateless seller-side HMAC-SHA256 verifier
+  - 5-step validation: JSON parse → seller_address match → expiry → remaining_calls > 0 → HMAC signature
+  - `hmac.compare_digest()` for constant-time comparison (timing attack prevention)
+- **Gateway prepaid fast-path** (`gateway.py`) — `X-Prepaid-Credential` header processed before on-chain auth
+  - Valid credential → proxy immediately (1ms local verify, no chain call)
+  - Invalid/expired/depleted → return 402 with standard x402 challenge so buyer falls back to on-chain
+  - `prepaid_verified` / `prepaid_rejected` metrics counters; exposed in `/health` test-mode response
+  - `/prepaid/purchase` endpoint now protected by `_rate_limiter` (was bypassed previously)
+- **`--prepaid-signing-key` CLI arg** for `ag402-gateway` (or `AG402_PREPAID_SIGNING_KEY` env var)
+- **Prepaid system integrated into ag402-core main branch** (`ag402_core/prepaid/`)
+  - `models.py`: `PrepaidCredential` dataclass + 5 package tiers (Starter→Enterprise)
+  - `client.py`: Buyer-side storage at `~/.ag402/prepaid_credentials.json`. `check_and_deduct()`, `rollback_call()`, `add_credential()`, `get_all_credentials()`, `purge_invalid_credentials()`, `create_credential()`
+- **Middleware prepaid fast-path** (`x402_middleware.py:_try_prepaid()`)
+  - Before every on-chain payment attempt, checks local prepaid credential for the seller
+  - Valid credential → attach `X-Prepaid-Credential` header, skip on-chain payment (1ms vs 500ms+)
+  - Seller rejects (402) or network error → rollback deduction, fall back to on-chain x402
+  - `check_and_deduct` + `rollback_call` both serialized under `_payment_lock` (prevents TOCTOU)
+
+### Fixed
+
+- **DNS rebinding protection**: `_is_private_address()` now includes `addr.is_link_local` — blocks AWS/GCP metadata endpoint `169.254.169.254` (Python 3.10 compat)
+- **`prepaid_rejected` metric**: Incremented on failed prepaid verification (was only incrementing `challenges_issued`)
+- **Health endpoint**: Test-mode `/health` now returns `prepaid_rejected` counter alongside `prepaid_verified`
+- **PrepaidVerifier security**: `signature=null` / non-string → returns `invalid_signature` instead of crash
+- **Atomic credential write**: `_save()` uses `tempfile.mkstemp()` + `os.replace()` — prevents file corruption on crash
+- **Rollback cap**: `min(remaining+1, original_calls)` prevents adversarial seller from inflating credential via repeated reject-loop
+- **Network error rollback**: Both rollback paths execute under `_payment_lock` to prevent concurrent writes
+
+### Changed
+
+- Test suite: **88 passed**, 0 failed (gateway 17 + verifier 21 + integration 50)
+
 ## [0.1.14] - 2026-03-08
 
 ### Fixed
