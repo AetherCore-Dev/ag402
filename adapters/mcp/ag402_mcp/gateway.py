@@ -23,6 +23,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 
+import aiosqlite
 import httpx
 from ag402_core.gateway.auth import PaymentVerifier
 from ag402_core.prepaid.verifier import PrepaidVerifier
@@ -91,6 +92,8 @@ class X402Gateway:
         # Persistent tx_hash deduplication (survives restarts)
         self._replay_db_path = replay_db_path or os.path.expanduser("~/.ag402/gateway_replay.db")
         self._persistent_guard = PersistentReplayGuard(db_path=self._replay_db_path)
+        # Prepaid issuance ledger — same DB file, separate table (see _init_prepaid_db)
+        self._prepaid_db: aiosqlite.Connection | None = None
         # Shared httpx client (created/closed via lifespan)
         self._http_client: httpx.AsyncClient | None = None
 
@@ -177,10 +180,12 @@ class X402Gateway:
             """Manage shared resources: httpx client and persistent replay guard."""
             gateway._http_client = httpx.AsyncClient(timeout=30.0)
             await gateway._persistent_guard.init_db()
+            await gateway._init_prepaid_db()
             yield
             await gateway._http_client.aclose()
             gateway._http_client = None
             await gateway._persistent_guard.close()
+            await gateway._close_prepaid_db()
 
         app = FastAPI(
             title="x402 Payment Gateway",
@@ -251,8 +256,13 @@ class X402Gateway:
         async def purchase_package(request: Request, body: _PrepaidPurchaseRequest) -> JSONResponse:
             """Verify on-chain USDC payment and issue a prepaid credential.
 
+            This endpoint is idempotent on tx_hash: retrying with the same
+            tx_hash (e.g. after a network timeout) returns the same credential
+            (same expiry, same signature) as the original issuance.
+
             In test mode, tx_hash is accepted as-is without on-chain check.
-            In production mode, the verifier validates the transaction.
+            In production mode, the verifier validates the transaction on-chain
+            (or falls back to on-chain lookup if the issuance record was lost).
             """
             client_ip = request.client.host if request.client else "unknown"
             if not self._rate_limiter.allow(client_ip):
@@ -275,7 +285,6 @@ class X402Gateway:
                     content={"error": "invalid_package", "detail": f"Unknown package_id: {body.package_id!r}"},
                 )
 
-            # Verify on-chain payment (test mode: accepted if well-formed)
             # Validate tx_hash before embedding in Authorization header string
             # (prevents header injection via crafted tx_hash values)
             if not re.fullmatch(r"[A-Za-z0-9_\-]{1,128}", body.tx_hash):
@@ -283,6 +292,77 @@ class X402Gateway:
                     status_code=400,
                     content={"error": "invalid_tx_hash", "detail": "tx_hash contains invalid characters"},
                 )
+
+            # Validate buyer_address length (prevent oversized inputs; Solana pubkeys are ≤44 base58 chars,
+            # but allow up to 128 to be permissive with different wallet formats and test addresses)
+            if not body.buyer_address or len(body.buyer_address) > 128:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "invalid_buyer_address", "detail": "buyer_address must be 1-128 characters"},
+                )
+
+            from datetime import datetime, timedelta
+            from datetime import timezone as _tz
+
+            from ag402_core.prepaid.client import _compute_hmac
+            from ag402_core.prepaid.models import PrepaidCredential
+            _signing_key = self._prepaid_verifier._signing_key
+
+            # ── Idempotency check ──────────────────────────────────────────
+            # If this tx_hash was already issued, replay the same credential.
+            # buyer_address must match to prevent credential theft.
+            #
+            # Security note: we check for an existing record FIRST (read-only),
+            # then fall through to on-chain verification + atomic INSERT for new
+            # purchases. The INSERT OR IGNORE in _record_prepaid_issued means that
+            # concurrent requests with the same new tx_hash race to insert; only
+            # one wins, the other re-reads and takes the idempotency path.
+            existing = await self._get_prepaid_issued(body.tx_hash)
+            if existing is not None:
+                stored_buyer, stored_pkg, issued_at_ts = existing
+                if stored_buyer != body.buyer_address:
+                    # Different buyer trying to claim same tx — reject silently
+                    # (don't reveal that this tx_hash exists for another buyer)
+                    logger.warning(
+                        "[GATEWAY] Idempotency conflict: tx_hash=%s stored_buyer=%s request_buyer=%s",
+                        body.tx_hash[:32], stored_buyer[:20], body.buyer_address[:20],
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "payment_verification_failed", "detail": "Transaction verification failed"},
+                    )
+                if stored_pkg != body.package_id:
+                    # package_id mismatch — replay with original package
+                    logger.warning(
+                        "[GATEWAY] Idempotency package mismatch: tx_hash=%s stored=%s request=%s — replaying original",
+                        body.tx_hash[:32], stored_pkg, body.package_id,
+                    )
+                    # Use the stored (original) package so credential is identical
+                    pkg = PACKAGES.get(stored_pkg, pkg)
+
+                # Re-derive the exact same credential using original issued_at timestamp
+                issued_at = datetime.fromtimestamp(issued_at_ts, tz=_tz.utc)
+                expires_at = issued_at + timedelta(days=pkg["days"])
+                signature = _compute_hmac(_signing_key, body.buyer_address, stored_pkg, expires_at)
+                cred = PrepaidCredential(
+                    buyer_address=body.buyer_address,
+                    package_id=stored_pkg,
+                    remaining_calls=pkg["calls"],
+                    expires_at=expires_at,
+                    signature=signature,
+                    seller_address=self.address,
+                    created_at=issued_at,
+                )
+                logger.info(
+                    "[GATEWAY] Replayed credential (idempotent): buyer=%s package=%s tx=%s",
+                    body.buyer_address[:24], stored_pkg, body.tx_hash[:32],
+                )
+                return JSONResponse(
+                    status_code=200,
+                    content={"credential": cred.to_dict(), "recovered": True},
+                )
+
+            # ── New purchase: verify on-chain payment ──────────────────────
             # Use legacy x402 format: "x402 <tx_hash>" — compatible with PaymentVerifier
             expected_amount = float(pkg["price"])
             pay_result = await self.verifier.verify(
@@ -297,16 +377,64 @@ class X402Gateway:
                     content={"error": "payment_verification_failed", "detail": pay_result.error},
                 )
 
-            # Issue credential — build only, do NOT store on seller side
-            # (seller returns JSON; buyer calls add_credential() locally)
-            from datetime import datetime
-            from datetime import timezone as _tz
-
-            from ag402_core.prepaid.client import _compute_hmac
-            from ag402_core.prepaid.models import PrepaidCredential, calculate_expiry
-            _signing_key = self._prepaid_verifier._signing_key
-            expires_at = calculate_expiry(pkg["days"])
+            # ── Issue credential + record issuance (atomic) ────────────────
+            # Record BEFORE returning — crash between record+return is the safe
+            # failure mode (buyer retries → idempotency path returns same cred).
+            #
+            # TOCTOU handling: two concurrent requests with the same new tx_hash
+            # both pass on-chain verification above. They race to INSERT. Only one
+            # wins (INSERT OR IGNORE); the other gets is_new=False, reads back the
+            # winner's row, and returns that identical credential. This guarantees
+            # every buyer gets exactly one credential per tx_hash.
+            now_utc = datetime.now(_tz.utc)
+            issued_at_ts = now_utc.timestamp()
+            expires_at = now_utc + timedelta(days=pkg["days"])
             signature = _compute_hmac(_signing_key, body.buyer_address, body.package_id, expires_at)
+
+            is_new = await self._record_prepaid_issued(
+                tx_hash=body.tx_hash,
+                buyer_address=body.buyer_address,
+                package_id=body.package_id,
+                issued_at=issued_at_ts,
+            )
+
+            if not is_new:
+                # Another concurrent request won the INSERT race.
+                # Read back the winning row and replay it.
+                existing = await self._get_prepaid_issued(body.tx_hash)
+                if existing is not None:
+                    stored_buyer, stored_pkg, stored_ts = existing
+                    if stored_buyer != body.buyer_address:
+                        logger.warning(
+                            "[GATEWAY] Race+conflict: tx_hash=%s stored_buyer=%s request_buyer=%s",
+                            body.tx_hash[:32], stored_buyer[:20], body.buyer_address[:20],
+                        )
+                        return JSONResponse(
+                            status_code=403,
+                            content={"error": "payment_verification_failed", "detail": "Transaction verification failed"},
+                        )
+                    replay_pkg = PACKAGES.get(stored_pkg, pkg)
+                    issued_at = datetime.fromtimestamp(stored_ts, tz=_tz.utc)
+                    expires_at = issued_at + timedelta(days=replay_pkg["days"])
+                    signature = _compute_hmac(_signing_key, body.buyer_address, stored_pkg, expires_at)
+                    cred = PrepaidCredential(
+                        buyer_address=body.buyer_address,
+                        package_id=stored_pkg,
+                        remaining_calls=replay_pkg["calls"],
+                        expires_at=expires_at,
+                        signature=signature,
+                        seller_address=self.address,
+                        created_at=issued_at,
+                    )
+                    logger.info(
+                        "[GATEWAY] Replayed credential (concurrent race): buyer=%s package=%s tx=%s",
+                        body.buyer_address[:24], stored_pkg, body.tx_hash[:32],
+                    )
+                    return JSONResponse(
+                        status_code=200,
+                        content={"credential": cred.to_dict(), "recovered": True},
+                    )
+
             cred = PrepaidCredential(
                 buyer_address=body.buyer_address,
                 package_id=body.package_id,
@@ -314,11 +442,12 @@ class X402Gateway:
                 expires_at=expires_at,
                 signature=signature,
                 seller_address=self.address,
-                created_at=datetime.now(_tz.utc),
+                created_at=now_utc,
             )
+
             logger.info(
-                "[GATEWAY] Issued prepaid credential: buyer=%s package=%s calls=%d",
-                body.buyer_address[:24], body.package_id, cred.remaining_calls,
+                "[GATEWAY] Issued prepaid credential: buyer=%s package=%s calls=%d tx=%s",
+                body.buyer_address[:24], body.package_id, cred.remaining_calls, body.tx_hash[:32],
             )
             return JSONResponse(
                 status_code=201,
@@ -483,6 +612,74 @@ class X402Gateway:
                 return JSONResponse(status_code=502, content={"error": "Bad Gateway"})
 
         return app
+
+    async def _init_prepaid_db(self) -> None:
+        """Open the prepaid issuance ledger (same DB file as replay guard)."""
+        self._prepaid_db = await aiosqlite.connect(self._replay_db_path, timeout=10.0)
+        await self._prepaid_db.execute("PRAGMA journal_mode=WAL")
+        await self._prepaid_db.execute("PRAGMA busy_timeout=5000")
+        await self._prepaid_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prepaid_issued (
+                tx_hash       TEXT PRIMARY KEY,
+                buyer_address TEXT NOT NULL,
+                package_id    TEXT NOT NULL,
+                issued_at     REAL NOT NULL
+            )
+            """
+        )
+        await self._prepaid_db.commit()
+        # Purge issuance records older than 366 days on each startup.
+        # The longest package is 730 days, but idempotency only needs to cover the
+        # purchase retry window (minutes/hours). Keeping 366 days is a safe margin.
+        cutoff = time.time() - 366 * 86400
+        cursor = await self._prepaid_db.execute(
+            "DELETE FROM prepaid_issued WHERE issued_at < ?", (cutoff,)
+        )
+        await self._prepaid_db.commit()
+        if cursor.rowcount:
+            logger.info("[GATEWAY] Purged %d stale prepaid_issued records", cursor.rowcount)
+
+    async def _close_prepaid_db(self) -> None:
+        if self._prepaid_db is not None:
+            await self._prepaid_db.close()
+            self._prepaid_db = None
+
+    async def _record_prepaid_issued(
+        self,
+        tx_hash: str,
+        buyer_address: str,
+        package_id: str,
+        issued_at: float,
+    ) -> bool:
+        """Insert a new issuance record atomically.
+
+        Returns True if this call performed the INSERT (new record),
+        False if the tx_hash already existed (INSERT OR IGNORE was a no-op).
+        This allows callers to detect concurrent races: the loser re-reads
+        the winning row and replays that credential instead.
+        """
+        if self._prepaid_db is None:
+            return True  # No DB — treat as new (fallback to on-chain flow)
+        cursor = await self._prepaid_db.execute(
+            "INSERT OR IGNORE INTO prepaid_issued (tx_hash, buyer_address, package_id, issued_at) VALUES (?, ?, ?, ?)",
+            (tx_hash, buyer_address, package_id, issued_at),
+        )
+        await self._prepaid_db.commit()
+        return cursor.rowcount == 1  # 1 = inserted, 0 = already existed
+
+    async def _get_prepaid_issued(
+        self, tx_hash: str
+    ) -> tuple[str, str, float] | None:
+        """Return (buyer_address, package_id, issued_at) for a tx_hash, or None."""
+        if self._prepaid_db is None:
+            return None
+        async with self._prepaid_db.execute(
+            "SELECT buyer_address, package_id, issued_at FROM prepaid_issued WHERE tx_hash = ?",
+            (tx_hash,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row  # None if not found
 
     async def _proxy_request(self, request: Request, path: str) -> Response:
         """Forward the request to the upstream target service."""

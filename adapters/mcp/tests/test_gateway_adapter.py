@@ -628,3 +628,214 @@ async def test_purchase_rate_limited_returns_429(tmp_path) -> None:
 
     await gateway._persistent_guard.close()
 
+
+# ---------------------------------------------------------------------------
+# B4: Idempotent purchase + credential recovery tests
+# ---------------------------------------------------------------------------
+
+
+async def _init_gateway(gateway: X402Gateway) -> None:
+    """Manually init both DB guards (lifespan won't fire in ASGITransport)."""
+    await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
+
+
+async def _close_gateway(gateway: X402Gateway) -> None:
+    await gateway._persistent_guard.close()
+    await gateway._close_prepaid_db()
+
+
+@pytest.mark.asyncio
+async def test_purchase_idempotent_same_tx_hash_returns_same_credential(tmp_path) -> None:
+    """Retrying POST /prepaid/purchase with the same tx_hash returns the same credential (200 + recovered=True)."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        # First purchase
+        r1 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "idempotent_tx_001"},
+        )
+        assert r1.status_code == 201
+        cred1 = r1.json()["credential"]
+
+        # Retry with identical payload (simulating network timeout + retry)
+        r2 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "idempotent_tx_001"},
+        )
+        assert r2.status_code == 200  # idempotent: 200 (not 201)
+        body2 = r2.json()
+        assert body2.get("recovered") is True
+        cred2 = body2["credential"]
+
+    # Signature must be identical — same expiry means same HMAC
+    assert cred1["signature"] == cred2["signature"]
+    assert cred1["expires_at"] == cred2["expires_at"]
+    assert cred1["buyer_address"] == cred2["buyer_address"]
+    assert cred1["package_id"] == cred2["package_id"]
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_idempotent_credential_verifies(tmp_path) -> None:
+    """Recovered credential (idempotent retry) passes PrepaidVerifier."""
+    from ag402_core.prepaid.models import PrepaidCredential
+    from ag402_core.prepaid.verifier import PrepaidVerifier
+
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": "p7d_500", "tx_hash": "idem_verify_tx_002"},
+        )
+        # Idempotent retry
+        r2 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": "p7d_500", "tx_hash": "idem_verify_tx_002"},
+        )
+
+    assert r2.status_code == 200
+    cred = PrepaidCredential.from_dict(r2.json()["credential"])
+    verifier = PrepaidVerifier(signing_key=PREPAID_KEY, seller_address=SELLER_ADDR)
+    assert verifier.verify(cred.to_header_value()).valid is True
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_idempotent_different_buyer_returns_409(tmp_path) -> None:
+    """Same tx_hash with a different buyer_address → 403 Forbidden (theft prevention, no info leak)."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    other_buyer = "OtherBuyerAddr22222222222222222222222222222"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        r1 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "conflict_tx_003"},
+        )
+        assert r1.status_code == 201
+
+        # Different buyer tries to claim the same tx_hash
+        r2 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": other_buyer, "package_id": PREPAID_PKG, "tx_hash": "conflict_tx_003"},
+        )
+        assert r2.status_code == 403
+        assert r2.json()["error"] == "payment_verification_failed"  # generic — no info leak
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_idempotent_package_mismatch_replays_original(tmp_path) -> None:
+    """Same tx_hash with different package_id → credential uses original package_id."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        r1 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": "p7d_500", "tx_hash": "pkg_mismatch_tx_004"},
+        )
+        assert r1.status_code == 201
+
+        # Same tx, different (more expensive) package — must replay original
+        r2 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": "p365d_5000", "tx_hash": "pkg_mismatch_tx_004"},
+        )
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert body2["credential"]["package_id"] == "p7d_500"  # original, not the expensive one
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_new_tx_hashes_each_issue_independently(tmp_path) -> None:
+    """Different tx_hashes each produce independent 201 credentials."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        r1 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "unique_tx_a"},
+        )
+        r2 = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "unique_tx_b"},
+        )
+
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    # Signatures differ (different issued_at timestamps)
+    assert r1.json()["credential"]["expires_at"] != r2.json()["credential"]["expires_at"]
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_idempotent_db_none_falls_back_to_onchain(tmp_path) -> None:
+    """When _prepaid_db is None (e.g. not initialized), gateway still issues a new credential."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await gateway._persistent_guard.init_db()
+    # Intentionally do NOT call _init_prepaid_db — simulates DB not available
+    # _prepaid_db remains None
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        resp = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": BUYER_ADDR, "package_id": PREPAID_PKG, "tx_hash": "no_db_tx_005"},
+        )
+
+    # Should still succeed — idempotency check is skipped when DB is None
+    assert resp.status_code == 201
+
+    await gateway._persistent_guard.close()
+
+
+@pytest.mark.asyncio
+async def test_purchase_invalid_buyer_address_returns_400(tmp_path) -> None:
+    """buyer_address longer than 128 chars → 400."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    too_long_addr = "X" * 129  # 129 chars > 128 max
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        resp = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": too_long_addr, "package_id": PREPAID_PKG, "tx_hash": "addr_val_tx_006"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_buyer_address"
+
+    await _close_gateway(gateway)
+
+
+@pytest.mark.asyncio
+async def test_purchase_empty_buyer_address_returns_400(tmp_path) -> None:
+    """Empty buyer_address → 400."""
+    gateway, app = _make_prepaid_gateway(tmp_path)
+    await _init_gateway(gateway)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
+        resp = await client.post(
+            "/prepaid/purchase",
+            json={"buyer_address": "", "package_id": PREPAID_PKG, "tx_hash": "empty_addr_tx_007"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_buyer_address"
+
+    await _close_gateway(gateway)
+

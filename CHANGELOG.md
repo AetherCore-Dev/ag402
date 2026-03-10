@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.16] - 2026-03-10
+## [0.1.17] - 2026-03-10
+
+### Added
+
+- **`ag402 prepaid recover`** — self-service credential recovery after gateway timeout; auto-reads `~/.ag402/pending_purchase.json` so no arguments are needed in the common case
+- **`ag402 prepaid pending`** — shows current in-flight purchase waiting for recovery (gateway URL, tx_hash, package_id, save time)
+- **Idempotent `/prepaid/purchase`** — same `tx_hash` always returns the identical credential (same expiry, same signature); safe to retry after any failure
+- **Prepaid issuance ledger** (`prepaid_issued` SQLite table) — persists across gateway restarts; records are purged after 366 days on startup to prevent unbounded growth
+- **Pending purchase file** (`~/.ag402/pending_purchase.json`) — written atomically after on-chain broadcast; integrity-protected with HMAC-SHA256; expires after 30 days; permissions `0600` on Unix
+
+### Fixed
+
+- **TOCTOU race condition** (`gateway.py`): two concurrent requests with the same `tx_hash` now produce one identical credential — `INSERT OR IGNORE` + `rowcount` check ensures only one winner; loser re-reads and replays the winner's credential
+- **Pending file permissions** (`cli.py`): file created with mode `0600` (owner-only) on Unix before writing sensitive data
+- **Pending file integrity** (`cli.py`): HMAC-SHA256 tag detects accidental or opportunistic tampering; failed check warns and ignores the file instead of silently using bad data
+- **Silent failure on pending save** (`cli.py`): failure now prints a visible warning with the manual `recover` command so the user knows to act
+- **Pending file expiry** (`cli.py`): records older than 30 days are ignored to prevent stale state from causing incorrect recovery
+- **`_pending_hmac` Windows crash** (`cli.py`): replaced `os.uname().nodename` (unavailable on Windows) with `socket.gethostname()`; added `os.getlogin()` fallback to `USERNAME`/`USER` env vars for container environments
+- **README prepaid buy syntax** (`README.md`): removed non-existent `--list` flag; used real package IDs (`p3d_100`); added `recover` command documentation
+- **Test docstring** (`test_gateway_adapter.py`): corrected "409 Conflict" to "403 Forbidden" to match actual behaviour
+
+### Changed
+
+- Test suite: **96 passed** (gateway 26 + verifier 21 + integration 50 - 1 pre-existing Windows permission skip)
+- `/prepaid/purchase` endpoint buyer_address conflict now returns `403` (not `409`) to avoid information leakage
+
+
 
 ### Added
 

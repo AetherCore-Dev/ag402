@@ -231,22 +231,29 @@ Use:  Agent → X-Prepaid-Credential header → local HMAC verify → 200 OK   �
 
 ```bash
 # Step 1: Browse available packages from any ag402 gateway
-ag402 prepaid buy https://your-gateway.example.com --list
+ag402 prepaid buy https://your-gateway.example.com p3d_100
 
-# Step 2: Purchase a pack (test mode — zero config, zero cost)
-ag402 prepaid buy https://your-gateway.example.com starter
-
-# Step 3: Check your credentials
+# Step 2: Check your credentials
 ag402 prepaid status
-
-# That's it — subsequent API calls through the middleware automatically use the credential
 ```
+
+Available package IDs: `p3d_100` (Starter), `p7d_500` (Basic), `p30d_1000` (Standard), `p365d_5000` (Professional), `p730d_10k` (Enterprise).
 
 In **production mode** (real USDC), `ag402 prepaid buy` will:
 1. Show the package price and seller address
 2. Ask `Confirm payment? [Y/n]`
 3. Broadcast the USDC on-chain automatically
 4. Store the credential at `~/.ag402/prepaid_credentials.json`
+
+If the gateway times out after payment is broadcast, your credential is not lost — retry or recover:
+
+```bash
+# Retry automatically picks up the last in-flight purchase
+ag402 prepaid recover https://your-gateway.example.com
+
+# Or provide explicit tx_hash and package_id if needed
+ag402 prepaid recover https://your-gateway.example.com <tx_hash> <package_id>
+```
 
 ```bash
 # Manage credentials

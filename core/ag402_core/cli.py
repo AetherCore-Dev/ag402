@@ -17,7 +17,7 @@ import os
 import platform
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ag402_core.terminal import (
@@ -207,11 +207,23 @@ def _build_parser() -> argparse.ArgumentParser:
     prepaid_sub = prepaid_p.add_subparsers(dest="prepaid_action")
     prepaid_sub.add_parser("status", help="Show all prepaid credentials and remaining calls")
     prepaid_sub.add_parser("purge", help="Remove expired and depleted credentials")
+    prepaid_sub.add_parser("pending", help="Show in-flight purchase (if any) waiting for recovery")
     buy_p = prepaid_sub.add_parser("buy", help="Purchase a prepaid package from a gateway")
     buy_p.add_argument("gateway_url", help="Gateway URL (e.g. http://localhost:8001)")
     buy_p.add_argument("package_id", help="Package ID (e.g. p30d_1000)")
     buy_p.add_argument("--buyer-address", default="",
                        help="Buyer wallet address (default: use configured wallet)")
+    recover_p = prepaid_sub.add_parser(
+        "recover",
+        help="Recover a credential after a failed purchase (use if `buy` timed out)",
+    )
+    recover_p.add_argument("gateway_url", help="Gateway URL (e.g. http://localhost:8001)")
+    recover_p.add_argument("tx_hash", nargs="?", default="",
+                           help="Transaction hash (auto-detected from last buy if omitted)")
+    recover_p.add_argument("package_id", nargs="?", default="",
+                           help="Package ID (auto-detected from last buy if omitted)")
+    recover_p.add_argument("--buyer-address", default="",
+                           help="Buyer wallet address (default: use configured wallet)")
 
     # --- export ---
     exp_p = sub.add_parser("export", help="Export transaction history to file")
@@ -2183,6 +2195,10 @@ async def _cmd_prepaid(args) -> None:
         _cmd_prepaid_purge()
     elif action == "buy":
         await _cmd_prepaid_buy(args)
+    elif action == "recover":
+        await _cmd_prepaid_recover(args)
+    elif action == "pending":
+        _cmd_prepaid_pending()
     else:
         # No sub-action: show status
         _cmd_prepaid_status()
@@ -2225,12 +2241,168 @@ def _cmd_prepaid_purge() -> None:
         print(f"\n  {_dim('Nothing to purge — all credentials are valid.')}\n")
 
 
+def _cmd_prepaid_pending() -> None:
+    """Show any in-flight purchase waiting for recovery."""
+    pending = _load_pending_purchase()
+    print()
+    if pending is None:
+        print(f"  {_dim('No pending purchase on record.')}")
+        print(f"  {_dim('(Records are cleared automatically after successful buy/recover.)')}")
+    else:
+        print(f"  {_bold('Pending Purchase')} — awaiting credential recovery")
+        print(f"  {'─' * 48}")
+        print(f"  gateway : {pending.get('gateway_url', '-')}")
+        print(f"  tx_hash : {_dim(str(pending.get('tx_hash', '-'))[:60])}")
+        print(f"  package : {pending.get('package_id', '-')}")
+        saved = pending.get("saved_at", "")
+        if saved:
+            print(f"  saved   : {saved[:19].replace('T', ' ')} UTC")
+        print()
+        gw = pending.get("gateway_url", "")
+        print(f"  Run {_cyan(f'ag402 prepaid recover {gw}')} to retrieve your credential.")
+    print()
+
+
+# ─── Pending purchase record (for recover-after-timeout UX) ─────────────────
+# Written after broadcast, cleared after successful purchase.
+# Stored at ~/.ag402/pending_purchase.json — single record (last broadcast).
+# Integrity-protected with HMAC-SHA256 so a tampered gateway_url cannot
+# silently redirect recovery to an attacker's endpoint.
+
+_PENDING_PURCHASE_FILE = Path.home() / ".ag402" / "pending_purchase.json"
+_PENDING_MAX_AGE_DAYS = 30  # Pending records older than this are treated as stale
+
+
+def _pending_hmac(data: dict) -> str:
+    """Compute HMAC-SHA256 over the stable fields of a pending purchase record.
+
+    Uses the machine's hostname + username as a low-entropy "device key" —
+    not cryptographically strong, but good enough to detect accidental or
+    opportunistic tampering of the local file.
+    """
+    import hashlib
+    import hmac as _hmac
+    import socket
+
+    # Prefer platform-independent socket.gethostname() over os.uname().
+    # Fall back to 'unknown' for any edge case (containers, CI, etc.).
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = "unknown"
+    try:
+        username = os.getlogin()
+    except Exception:
+        username = os.environ.get("USERNAME") or os.environ.get("USER") or "unknown"
+
+    device_key = f"{username}-{hostname}".encode()
+    msg = f"{data['gateway_url']}|{data['tx_hash']}|{data['package_id']}|{data['buyer_address']}|{data['saved_at']}".encode()
+    return _hmac.new(device_key, msg, hashlib.sha256).hexdigest()
+
+
+def _save_pending_purchase(gateway_url: str, tx_hash: str, package_id: str, buyer_address: str) -> None:
+    """Persist the in-flight purchase so `recover` can find it without arguments.
+
+    The file is written atomically (tempfile + rename) and protected with a
+    HMAC integrity tag so tampering is detectable. On Unix, file mode is set
+    to 0600 (owner-only read/write). Raises a warning (does NOT silently fail)
+    so the user knows that `recover` will require manual tx_hash input.
+    """
+    import contextlib
+    import tempfile
+
+    saved_at = datetime.now(timezone.utc).isoformat()
+    data = {
+        "gateway_url": gateway_url,
+        "tx_hash": tx_hash,
+        "package_id": package_id,
+        "buyer_address": buyer_address,
+        "saved_at": saved_at,
+    }
+    data["_hmac"] = _pending_hmac(data)
+
+    _PENDING_PURCHASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_PENDING_PURCHASE_FILE.parent, prefix=".pending_tmp_", suffix=".json")
+    try:
+        # Set permissions to 0600 before writing any sensitive data (Unix only)
+        with contextlib.suppress(OSError, AttributeError):
+            os.chmod(tmp_path, 0o600)
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, _PENDING_PURCHASE_FILE)
+        # Re-apply permissions after rename in case umask widens them (Unix only)
+        with contextlib.suppress(OSError, AttributeError):
+            os.chmod(_PENDING_PURCHASE_FILE, 0o600)
+    except Exception as exc:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        # Warn explicitly — user must pass tx_hash manually to `recover`
+        print(f"  {_yellow('⚠')} Could not save pending purchase record: {exc}")
+        print("     If the gateway request fails, you will need to run:")
+        print(f"     ag402 prepaid recover {gateway_url} {tx_hash} {package_id}")
+
+
+def _load_pending_purchase() -> dict | None:
+    """Load and validate the pending purchase record.
+
+    Returns None if:
+    - File does not exist
+    - File is malformed / missing fields
+    - HMAC integrity check fails (possible tampering)
+    - Record is older than _PENDING_MAX_AGE_DAYS (stale)
+    """
+    if not _PENDING_PURCHASE_FILE.exists():
+        return None
+    try:
+        with open(_PENDING_PURCHASE_FILE) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    # Validate required fields
+    required = {"gateway_url", "tx_hash", "package_id", "buyer_address", "saved_at"}
+    if not required.issubset(data.keys()):
+        return None
+
+    # Integrity check — warn but do not crash if HMAC is missing (older format)
+    stored_hmac = data.pop("_hmac", None)
+    if stored_hmac is not None:
+        try:
+            import hmac as _hmac
+            expected = _pending_hmac(data)
+            if not _hmac.compare_digest(expected, stored_hmac):
+                print(f"  {_yellow('⚠')} Pending purchase record failed integrity check — ignoring.")
+                return None
+        except Exception:
+            pass  # HMAC check not critical; fall through
+    data["_hmac"] = stored_hmac  # restore for callers that inspect raw data
+
+    # Expiry check
+    try:
+        saved_at = datetime.fromisoformat(data["saved_at"])
+        if datetime.now(timezone.utc) - saved_at > timedelta(days=_PENDING_MAX_AGE_DAYS):
+            print(f"  {_yellow('⚠')} Pending purchase record is older than {_PENDING_MAX_AGE_DAYS} days — ignoring.")
+            return None
+    except Exception:
+        pass  # Malformed date — keep going, recovery is low-risk
+
+    return data
+
+
+def _clear_pending_purchase() -> None:
+    import contextlib
+    with contextlib.suppress(OSError):
+        _PENDING_PURCHASE_FILE.unlink()
+
+
 async def _cmd_prepaid_buy(args) -> None:
     """Purchase a prepaid package from a gateway."""
     import httpx
 
     from ag402_core.prepaid.client import add_credential
-    from ag402_core.prepaid.models import PrepaidCredential
 
     gateway_url = args.gateway_url.rstrip("/")
     package_id = args.package_id
@@ -2309,38 +2481,145 @@ async def _cmd_prepaid_buy(args) -> None:
             return
         tx_hash = pay_result.tx_hash
         print(f"  ④ {_green('✓')} Broadcast — tx: {_dim(tx_hash[:44])}")
+        # Save pending record immediately after broadcast so `recover` works
+        # even if this process crashes before the credential is delivered.
+        _save_pending_purchase(gateway_url, tx_hash, package_id, buyer_address)
 
     print("  ⑤ Submitting purchase to gateway …")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.post(
-                f"{gateway_url}/prepaid/purchase",
-                json={"buyer_address": buyer_address, "package_id": package_id, "tx_hash": tx_hash},
-            )
-        except Exception as exc:
-            print(f"  {_red('✗')} Purchase request failed: {exc}\n")
-            return
-
-        if resp.status_code not in (200, 201):
-            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            print(f"  {_red('✗')} Gateway rejected purchase ({resp.status_code}): {body.get('detail') or body.get('error', 'unknown')}\n")
-            return
-
-        try:
-            body_json = resp.json()
-            cred_data = body_json.get("credential", {}) if isinstance(body_json, dict) else {}
-        except Exception:
-            cred_data = {}
-
-    try:
-        cred = PrepaidCredential.from_dict(cred_data)
-    except Exception as exc:
-        print(f"  {_red('✗')} Invalid credential in response: {exc}\n")
+    cred = await _submit_purchase_with_retry(
+        gateway_url=gateway_url,
+        buyer_address=buyer_address,
+        package_id=package_id,
+        tx_hash=tx_hash,
+    )
+    if cred is None:
+        # Retry exhausted — instruct user to run recover (no extra args needed)
+        print(f"\n  {_yellow('⚠')} Your USDC payment was broadcast (tx: {_dim(tx_hash[:44])}).")
+        print("     The credential could not be retrieved. Run this to recover it:")
+        print(f"     {_cyan(f'ag402 prepaid recover {gateway_url}')}\n")
         return
 
+    _clear_pending_purchase()
     add_credential(cred)
     print(f"  {_green('✓')} Credential stored — {_bold(str(cred.remaining_calls))} calls, expires {cred.expires_at.date()}")
     print("     Use `ag402 prepaid status` to view all credentials.\n")
+
+
+async def _submit_purchase_with_retry(
+    gateway_url: str,
+    buyer_address: str,
+    package_id: str,
+    tx_hash: str,
+    max_attempts: int = 3,
+) -> None:
+    """POST /prepaid/purchase with exponential backoff. Returns PrepaidCredential or None."""
+    import asyncio
+
+    import httpx
+
+    from ag402_core.prepaid.models import PrepaidCredential
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{gateway_url}/prepaid/purchase",
+                    json={"buyer_address": buyer_address, "package_id": package_id, "tx_hash": tx_hash},
+                )
+        except Exception as exc:
+            if attempt < max_attempts:
+                wait = 2 ** attempt
+                print(f"     {_yellow('⚠')} Could not reach gateway — retrying in {wait}s …")
+                await asyncio.sleep(wait)
+                continue
+            print(f"  {_red('✗')} Purchase request failed: {exc}\n")
+            return None
+
+        if resp.status_code in (200, 201):
+            try:
+                body_json = resp.json()
+                cred_data = body_json.get("credential", {}) if isinstance(body_json, dict) else {}
+                cred = PrepaidCredential.from_dict(cred_data)
+                if resp.status_code == 200:
+                    print(f"  {_green('✓')} Credential recovered (idempotent retry).")
+                return cred
+            except Exception as exc:
+                print(f"  {_red('✗')} Invalid credential in response: {exc}\n")
+                return None
+
+        if resp.status_code == 429 and attempt < max_attempts:
+            wait = 2 ** attempt
+            print(f"     {_yellow('⚠')} Gateway is busy — retrying in {wait}s …")
+            await asyncio.sleep(wait)
+            continue
+
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        print(f"  {_red('✗')} Gateway rejected purchase ({resp.status_code}): {body.get('detail') or body.get('error', 'unknown')}\n")
+        return None
+
+    return None
+
+
+async def _cmd_prepaid_recover(args) -> None:
+    """Recover a lost credential using a confirmed tx_hash."""
+    from ag402_core.prepaid.client import add_credential
+
+    gateway_url = args.gateway_url.rstrip("/")
+    tx_hash = getattr(args, "tx_hash", "") or ""
+    package_id = getattr(args, "package_id", "") or ""
+    buyer_address = getattr(args, "buyer_address", "") or ""
+
+    # Auto-detect from pending record when args are omitted
+    if not tx_hash or not package_id or not buyer_address:
+        pending = _load_pending_purchase()
+        if pending:
+            tx_hash = tx_hash or pending.get("tx_hash", "")
+            package_id = package_id or pending.get("package_id", "")
+            buyer_address = buyer_address or pending.get("buyer_address", "")
+            if not gateway_url:
+                gateway_url = pending.get("gateway_url", "").rstrip("/")
+
+    if not buyer_address:
+        from ag402_core.config import load_config
+        cfg = load_config()
+        buyer_address = getattr(cfg, "solana_public_key", "") or ""
+        if not buyer_address:
+            print(f"\n  {_red('✗')} No buyer address. Pass --buyer-address or configure AG402_PUBLIC_KEY.\n")
+            return
+
+    if not tx_hash:
+        print(f"\n  {_red('✗')} No tx_hash found. Pass it as an argument or run `ag402 prepaid buy` first.\n")
+        return
+
+    if not package_id:
+        print(f"\n  {_red('✗')} No package_id found. Pass it as an argument or run `ag402 prepaid buy` first.\n")
+        return
+
+    print()
+    print(f"  {_bold('Prepaid Recovery')}")
+    print(f"  {'─' * 48}")
+    print(f"  tx_hash : {_dim(tx_hash[:44])}")
+    print(f"  package : {package_id}")
+    print(f"  gateway : {gateway_url}")
+    print()
+
+    cred = await _submit_purchase_with_retry(
+        gateway_url=gateway_url,
+        buyer_address=buyer_address,
+        package_id=package_id,
+        tx_hash=tx_hash,
+    )
+    if cred is None:
+        print(f"  {_red('✗')} Recovery failed. The gateway may not have a record of this transaction.")
+        print("     If payment is confirmed on-chain, contact the gateway operator with your tx_hash.\n")
+        return
+
+    _clear_pending_purchase()
+    add_credential(cred)
+    print(f"  {_green('✓')} Credential recovered — {_bold(str(cred.remaining_calls))} calls, expires {cred.expires_at.date()}")
+    print("     Use `ag402 prepaid status` to view all credentials.\n")
+
+
 if __name__ == "__main__":
     main()
