@@ -11,7 +11,7 @@
   <p align="center">
     <img src="https://img.shields.io/badge/tests-748%2B_passing-brightgreen" alt="Tests" />
     <img src="https://img.shields.io/badge/coverage-90%25+-brightgreen" alt="Coverage" />
-    <img src="https://img.shields.io/badge/security_audits-4_rounds-blue" alt="Security Audits" />
+    <img src="https://img.shields.io/badge/security_reviews-4_rounds-blue" alt="Security Audits" />
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python" />
     <img src="https://img.shields.io/badge/node-18%2B-brightgreen" alt="Node.js" />
     <a href="https://pypi.org/project/ag402-core/"><img src="https://img.shields.io/pypi/v/ag402-core" alt="PyPI" /></a>
@@ -55,7 +55,7 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 
 ### Battle-tested
 - [Token RugCheck](https://github.com/AetherCore-Dev/token-rugcheck) — **live on Solana mainnet** with real USDC payments
-- 748+ tests, 90%+ coverage, 4 security audits (24/24 issues fixed)
+- 748+ tests, 90%+ coverage, 4 rounds of internal security review (24/24 issues fixed)
 - Multi-endpoint RPC failover + circuit breaker + async delivery retry
 
 ### Blazing fast
@@ -336,7 +336,7 @@ Buyers can then discover packages at `GET /prepaid/packages` and purchase at `PO
 
 Your agent holds private keys and moves real USDC. Security is not a feature — it's the foundation.
 
-**4 rounds of security audits** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 748+ total tests · 90%+ coverage
+**4 rounds of internal security review** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 748+ total tests · 90%+ coverage
 
 ### 6-Layer Budget Protection
 
@@ -499,7 +499,7 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 | ✅ Solana USDC payments | **Shipped** | Standard x402 on-chain payments (~0.5s) |
 | ✅ Prepaid system | **Shipped** | HMAC credentials, ~1ms, zero gas per call |
 | ✅ Claude Code / Cursor / OpenClaw | **Shipped** | One-command install, native MCP support |
-| ✅ 4 security audits | **Shipped** | 24/24 issues fixed, 748+ tests |
+| ✅ 4 internal security reviews | **Shipped** | 24/24 issues fixed, 748+ tests |
 | ✅ **TypeScript SDK** | **Shipped** | [`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch) — zero-dep Node.js/Bun/Deno buyer SDK. 100 tests, dual ESM+CJS, full protocol utilities |
 | 🔜 `@ag402/solana` | Planned | Real Solana USDC payment provider for TypeScript |
 | 🔜 Multi-chain | Planned | Base, Polygon, Arbitrum USDC support |
