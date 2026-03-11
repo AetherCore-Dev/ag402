@@ -1,0 +1,124 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// ─── Mock @solana/web3.js ────────────────────────────────────────────────────
+// Hoisted by Vitest. Factory runs once; vi.clearAllMocks() in beforeEach
+// resets call history while preserving factory return values.
+vi.mock("@solana/web3.js", () => {
+  const mockPublicKey = {
+    toBase58: vi.fn().mockReturnValue("PayerPubkey1111111111111111111111111111111"),
+    toString: vi.fn().mockReturnValue("PayerPubkey1111111111111111111111111111111"),
+  };
+  const mockKeypair = {
+    publicKey: mockPublicKey,
+    secretKey: new Uint8Array(64),
+  };
+  return {
+    Connection: vi.fn().mockImplementation(() => ({
+      sendTransaction: vi.fn().mockResolvedValue("5xFakeTxSignature111111111111111111111111111111"),
+      confirmTransaction: vi.fn().mockResolvedValue({ value: { err: null } }),
+    })),
+    Keypair: {
+      fromSecretKey: vi.fn().mockReturnValue(mockKeypair),
+    },
+    PublicKey: vi.fn().mockImplementation((addr: string) => ({
+      toBase58: () => addr,
+      toString: () => addr,
+    })),
+    Transaction: vi.fn().mockImplementation(() => ({
+      add: vi.fn().mockReturnThis(),
+    })),
+    LAMPORTS_PER_SOL: 1_000_000_000,
+  };
+});
+
+// ─── Mock bs58 ───────────────────────────────────────────────────────────────
+vi.mock("bs58", () => ({
+  default: {
+    decode: vi.fn().mockReturnValue(new Uint8Array(64)),
+  },
+}));
+
+// ─── Mock @solana/spl-token ──────────────────────────────────────────────────
+vi.mock("@solana/spl-token", () => ({
+  getOrCreateAssociatedTokenAccount: vi.fn().mockResolvedValue({
+    address: {
+      toBase58: () => "PayerATA1111111111111111111111111111111111",
+      toString: () => "PayerATA1111111111111111111111111111111111",
+    },
+  }),
+  createTransferCheckedInstruction: vi.fn().mockReturnValue({ programId: "tokenProg", data: new Uint8Array() }),
+  TOKEN_PROGRAM_ID: { toBase58: () => "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" },
+}));
+
+// ─── Mock @solana/spl-memo ───────────────────────────────────────────────────
+vi.mock("@solana/spl-memo", () => ({
+  createMemoInstruction: vi.fn().mockReturnValue({ programId: "memoProg", data: new Uint8Array() }),
+}));
+
+// ─── Import SUT (after mocks) ────────────────────────────────────────────────
+import { SolanaPaymentProvider, fromEnv } from "../index.ts";
+
+// ─── Shared reset ────────────────────────────────────────────────────────────
+// vi.clearAllMocks() resets call history between tests while preserving
+// factory mock return values (unlike vi.resetAllMocks() which removes them).
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ─── Test: Constructor ───────────────────────────────────────────────────────
+describe("SolanaPaymentProvider — constructor", () => {
+  // A syntactically valid base58 string of appropriate length
+  const VALID_KEY = "4NMwxzmYj2uvHuq8xoqhY8RXg63KSVJM1DXkpbmkUY7YQWoVrk7DqEDsomePvYKqU1h7H4P1DpxJnrZMHNF6Abt";
+
+  it("constructs successfully with a valid base58 private key", () => {
+    expect(() => new SolanaPaymentProvider({ privateKey: VALID_KEY })).not.toThrow();
+  });
+
+  it("uses devnet as default rpcUrl", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    expect(Connection).toHaveBeenCalledWith(
+      "https://api.devnet.solana.com",
+      expect.anything()
+    );
+  });
+
+  it("uses custom rpcUrl when provided", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    new SolanaPaymentProvider({
+      privateKey: VALID_KEY,
+      rpcUrl: "https://api.mainnet-beta.solana.com",
+    });
+    expect(Connection).toHaveBeenCalledWith(
+      "https://api.mainnet-beta.solana.com",
+      expect.anything()
+    );
+  });
+
+  it("throws when given an invalid base58 private key", async () => {
+    const bs58 = await import("bs58");
+    // Simulate bs58.decode throwing on invalid input
+    vi.mocked(bs58.default.decode).mockImplementationOnce(() => {
+      throw new Error("Non-base58 character");
+    });
+    expect(() => new SolanaPaymentProvider({ privateKey: "not-valid-base58!!!" })).toThrow();
+  });
+});
+
+// ─── Test: getAddress() ──────────────────────────────────────────────────────
+describe("SolanaPaymentProvider — getAddress()", () => {
+  const VALID_KEY = "4NMwxzmYj2uvHuq8xoqhY8RXg63KSVJM1DXkpbmkUY7YQWoVrk7DqEDsomePvYKqU1h7H4P1DpxJnrZMHNF6Abt";
+
+  it("returns a base58 public key string", () => {
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    const addr = provider.getAddress();
+    expect(typeof addr).toBe("string");
+    expect(addr.length).toBeGreaterThan(0);
+  });
+
+  it("does not contain CR, LF, or quotes (header injection safety)", () => {
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    const addr = provider.getAddress();
+    expect(addr).not.toMatch(/[\r\n"]/);
+  });
+});
