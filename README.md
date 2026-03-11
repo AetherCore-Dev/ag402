@@ -13,6 +13,7 @@
     <img src="https://img.shields.io/badge/coverage-90%25+-brightgreen" alt="Coverage" />
     <img src="https://img.shields.io/badge/security_audits-4_rounds-blue" alt="Security Audits" />
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python" />
+    <img src="https://img.shields.io/badge/node-18%2B-brightgreen" alt="Node.js" />
     <a href="https://pypi.org/project/ag402-core/"><img src="https://img.shields.io/pypi/v/ag402-core" alt="PyPI" /></a>
     <a href="https://github.com/AetherCore-Dev/ag402/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AetherCore-Dev/ag402" alt="License" /></a>
     <a href="https://github.com/AetherCore-Dev/ag402/commits/main"><img src="https://img.shields.io/github/last-commit/AetherCore-Dev/ag402" alt="Last Commit" /></a>
@@ -41,7 +42,9 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 
 ### Zero friction
 - Zero code changes for buyers, sellers, and MCP developers
-- Three CLI commands cover everything: `ag402 run`, `ag402 serve`, `ag402 install`
+- One command to start paying: `ag402 run -- python my_agent.py`
+- One command to start selling: `ag402 serve --target ... --price ... --address ...`
+- One command to install MCP tools: `ag402 install claude-code`
 - No config files, no API keys, no accounts, no signup
 - [Colab one-click demo](https://colab.research.google.com/github/AetherCore-Dev/ag402/blob/main/examples/ag402_quickstart.ipynb) — try it in your browser, zero install
 
@@ -83,24 +86,47 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 | You are... | What you do | Code changes |
 |:-----------|:------------|:-------------|
 | **Agent user** (LangChain, CrewAI, AutoGen, any Python agent) | `pip install ag402-core && ag402 run -- python my_agent.py` | **Zero** — your agent code is untouched |
+| **TypeScript/Node.js agent developer** | `npm install @ag402/fetch` — wrap `fetch()` with `createX402Fetch()` | **~2 lines** — replace `fetch` with `createX402Fetch(...)` |
 | **Claude Code / Cursor user** | `ag402 install claude-code` (or `cursor`) | **Zero** — MCP tools appear automatically |
 | **OpenClaw user** | `ag402 install openclaw` | **Zero** — native Skill + MCP, auto-configured |
 | **API seller** (monetize your API) | `ag402 serve --target http://your-api:8000 --price 0.05 --address <Addr>` | **Zero** — reverse proxy handles everything |
 | **MCP server developer** | `ag402 serve --target http://your-mcp:3000 --price 0.01 --address <Addr>` | **Zero** — wrap your existing MCP server, instant paywall |
 
-No config files. No API keys. No accounts. No code changes.
+No config files. No API keys. No accounts. Minimal code changes.
 
 ---
 
 ## Try It Now
 
+**Python (zero code changes):**
 ```bash
 pip install ag402-core
 ag402 init       # Creates wallet + $100 test USDC — zero prompts
 ag402 demo       # Watch the full payment flow end-to-end
 ```
 
-Or zero install: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AetherCore-Dev/ag402/blob/main/examples/ag402_quickstart.ipynb)
+**TypeScript/Node.js:**
+```bash
+npm install @ag402/fetch
+```
+```typescript
+import { createX402Fetch, InMemoryWallet } from "@ag402/fetch";
+const apiFetch = createX402Fetch({ wallet: new InMemoryWallet(100) }); // $100 budget
+const res = await apiFetch("https://paid-api.example.com/data");
+// 402 → auto-pays USDC → retries → 200 OK
+```
+
+**Claude Code / Cursor:**
+```bash
+pip install ag402-core ag402-client-mcp && ag402 install claude-code
+```
+
+**Sell your API (zero code changes):**
+```bash
+pip install ag402-core ag402-mcp && ag402 serve --target http://your-api:8000 --price 0.05 --address <Addr>
+```
+
+Or zero install (Python): [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AetherCore-Dev/ag402/blob/main/examples/ag402_quickstart.ipynb)
 
 ---
 
@@ -173,6 +199,26 @@ Restart your tool. Three MCP tools appear:
 
 **OpenClaw** gets the deepest integration — Ag402 ships as a **native OpenClaw Skill** (`SKILL.md` + `TOOLS.md` + `skill.py`), not a wrapper. The skill registers natively in OpenClaw's skill system, with full tool definitions, prepaid support, and auto-fallback.
 
+### For TypeScript/Node.js Developers — Two Lines
+
+```bash
+npm install @ag402/fetch
+```
+
+```typescript
+import { createX402Fetch, InMemoryWallet } from "@ag402/fetch";
+
+const apiFetch = createX402Fetch({
+  wallet: new InMemoryWallet(100), // $100 budget
+  config: { maxAmountPerCall: 1.00, maxTotalSpend: 50.00 },
+});
+
+const res = await apiFetch("https://paid-api.example.com/data");
+// 402 Payment Required → auto-pays → retries → 200 OK
+```
+
+Swap `InMemoryWallet` with your own `Wallet` implementation and `MockPaymentProvider` with `@ag402/solana` (coming soon — see Roadmap) for real on-chain payments. Zero runtime dependencies — Node.js 18+, Bun, Deno.
+
 ### For API Sellers — Zero Code Changes
 
 ```bash
@@ -200,7 +246,7 @@ Your existing API runs untouched behind a reverse proxy. The proxy:
 | **RPC resilience** | **Multi-endpoint** | Exponential backoff → auto-failover to backup RPC → circuit breaker |
 | **Delivery guarantee** | **Async retry** | Payment succeeds but upstream fails? Background worker retries with backoff |
 
-### 🆕 Prepaid System — From 500ms to 1ms
+### Prepaid System — From 500ms to 1ms
 
 **The problem:** Standard x402 payments require an on-chain Solana transaction for every API call (~0.5s + gas fee). For high-frequency agents making hundreds of calls per hour, this adds up in both latency and cost.
 
@@ -231,14 +277,14 @@ Use:  Agent → X-Prepaid-Credential header → local HMAC verify → 200 OK   �
 #### Quick Start (Buyer)
 
 ```bash
-# Step 1: Browse available packages from any ag402 gateway
+# Purchase a prepaid pack from any ag402 gateway
 ag402 prepaid buy https://your-gateway.example.com p3d_100
 
-# Step 2: Check your credentials
+# Check your credentials
 ag402 prepaid status
 ```
 
-Available package IDs: `p3d_100` (Starter), `p7d_500` (Basic), `p30d_1000` (Standard), `p365d_5000` (Professional), `p730d_10k` (Enterprise).
+Available package IDs: `p3d_100` (Starter), `p7d_500` (Basic), `p30d_1000` (Pro), `p365d_5000` (Business), `p730d_10k` (Enterprise).
 
 In **production mode** (real USDC), `ag402 prepaid buy` will:
 1. Show the package price and seller address
@@ -265,14 +311,14 @@ ag402 prepaid purge    # Remove expired or depleted credentials
 #### Seller Setup
 
 ```bash
-# Start gateway with prepaid support (generates a signing key if not set)
-ag402-gateway --target http://localhost:8000 \
-              --price 0.01 \
-              --address <YourSolanaAddress> \
-              --prepaid-signing-key <secret-key>
+# Start gateway with prepaid support
+ag402 serve --target http://localhost:8000 \
+            --price 0.01 \
+            --address <YourSolanaAddress> \
+            --prepaid-signing-key <secret-key>
 
 # Or via environment variable
-AG402_PREPAID_SIGNING_KEY=<secret-key> ag402-gateway ...
+AG402_PREPAID_SIGNING_KEY=<secret-key> ag402 serve --target http://localhost:8000 --price 0.01 --address <Addr>
 ```
 
 Buyers can then discover packages at `GET /prepaid/packages` and purchase at `POST /prepaid/purchase`.
@@ -330,7 +376,7 @@ WWW-Authenticate: x402 chain="solana" token="USDC" amount="0.05" address="..."
 → Client pays on-chain, retries with:
 
 GET /data HTTP/1.1
-Authorization: x402 <solana_tx_hash>
+Authorization: x402 tx_hash="abc123..." chain="solana" payer_address="..." request_id="..."
 
 → Server verifies on-chain → 200 OK
 ```
@@ -361,7 +407,7 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 │  └──────────┬───────────────┘    └────────────────────────┘     │
 │             │ tx_hash                                            │
 │             ▼                                                    │
-│  Retry original request with  Authorization: x402 <tx_hash>     │
+│  Retries with: Authorization: x402 tx_hash="..." chain="solana" │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -409,6 +455,11 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 | `ag402 doctor` | Environment health check |
 | `ag402 upgrade` | Migrate test → production |
 | `ag402 export` | Export history (JSON/CSV) |
+| `ag402 prepaid buy <url> <pkg>` | Purchase a prepaid credit pack |
+| `ag402 prepaid status` | View all prepaid credentials (calls left / expiry) |
+| `ag402 prepaid purge` | Remove expired or depleted credentials |
+| `ag402 prepaid recover <url>` | Recover a credential after gateway timeout |
+| `ag402 prepaid pending` | Show any in-flight (unconfirmed) purchase |
 
 [Full CLI reference → llms.txt](llms.txt) (AI-readable, paste into your agent's context)
 
@@ -433,34 +484,6 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 
 ---
 
-**TypeScript/Node.js** (zero dependencies):
-```bash
-npm install @ag402/fetch
-```
-```typescript
-import { createX402Fetch, InMemoryWallet } from "@ag402/fetch";
-const fetch = createX402Fetch({ wallet: new InMemoryWallet(100) });
-const res = await fetch("https://paid-api.example.com/data");
-// 402 → auto-pays USDC → retries → 200 OK
-```
-
-**Agent user** (zero code changes):
-```bash
-pip install ag402-core && ag402 init && ag402 run -- python my_agent.py
-```
-
-**Claude Code / Cursor**:
-```bash
-pip install ag402-core ag402-client-mcp && ag402 install claude-code
-```
-
-**Sell your API** (zero code changes):
-```bash
-pip install ag402-core ag402-mcp && ag402 serve --target http://your-api:8000 --price 0.05 --address <Addr>
-```
-
----
-
 ## Community
 
 - [GitHub Discussions](https://github.com/AetherCore-Dev/ag402/discussions) — questions, ideas, show & tell
@@ -482,33 +505,6 @@ pip install ag402-core ag402-mcp && ag402 serve --target http://your-api:8000 --
 | 🔜 Multi-chain | Planned | Base, Polygon, Arbitrum USDC support |
 | 🔜 Stripe fallback | Planned | Fiat payment fallback for non-crypto users |
 | 🔜 Dashboard | Planned | Web UI for sellers — revenue, analytics, API keys |
-
-### TypeScript SDK — Now Available
-
-**[`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch)** is the TypeScript buyer-side SDK for the x402 auto-payment protocol.
-
-```bash
-npm install @ag402/fetch
-```
-
-```typescript
-import { createX402Fetch, InMemoryWallet, MockPaymentProvider } from "@ag402/fetch";
-
-const wallet = new InMemoryWallet(100); // $100 budget
-const apiFetch = createX402Fetch({
-  wallet,
-  provider: new MockPaymentProvider(), // swap for @ag402/solana in production
-  config: { maxAmountPerCall: 1.00, maxTotalSpend: 50.00 },
-});
-
-const res = await apiFetch("https://paid-api.example.com/data");
-// 402 Payment Required → auto-pays → retries → 200 OK
-console.log(res.x402.paymentMade, res.x402.amountPaid, res.x402.txHash);
-```
-
-**Features:** Zero runtime dependencies · Node.js 18+ / Bun / Deno · Dual ESM+CJS · 100 tests · Full protocol utilities · `paymentTimeoutMs` with wallet rollback · `blocked` field to distinguish local budget rejection from server 402
-
-[→ Full TypeScript SDK documentation](sdk/typescript/README.md)
 
 ---
 
