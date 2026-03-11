@@ -41,7 +41,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean --external @solana/web3.js --external @solana/spl-token --external @solana/spl-memo --external bs58",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
@@ -76,14 +76,14 @@
   "dependencies": {
     "@solana/web3.js": "^1.98.0",
     "@solana/spl-token": "^0.4.0",
-    "@solana/spl-memo": "^0.3.0",
+    "@solana/spl-memo": "^0.2.5",
     "bs58": "^6.0.0"
   },
   "peerDependencies": {
     "@ag402/fetch": "^0.1.0"
   },
   "devDependencies": {
-    "@types/node": "^25.4.0",
+    "@types/node": "^22.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
@@ -407,128 +407,65 @@ export class SolanaPaymentProvider implements PaymentProvider {
     return addr.replace(/[\r\n"]/g, "");
   }
 
-  /**
-   * Pay the x402 challenge by broadcasting a real USDC transfer on Solana.
-   * Mirrors Python SolanaAdapter.pay() exactly.
-   *
-   * Steps:
-   *   1. Validate chain + token
-   *   2. Parse amount string → lamports (× 10^6)
-   *   3. Get/create payer ATA
-   *   4. Get/create recipient ATA
-   *   5. Build transfer_checked instruction
-   *   6. Attach Memo: "Ag402-v1|{requestId}"
-   *   7. Sign → sendTransaction → confirmTransaction("confirmed")
-   *   8. Return base58 tx signature
-   */
-  async pay(challenge: X402PaymentChallenge, requestId: string): Promise<string> {
-    // Step 1: Validate — throw immediately, no RPC calls
-    if (challenge.chain !== "solana") {
-      throw new Error(
-        `Unsupported chain: "${challenge.chain}". @ag402/solana only supports "solana".`
-      );
-    }
-    if (challenge.token !== "USDC") {
-      throw new Error(
-        `Unsupported token: "${challenge.token}". @ag402/solana only supports "USDC".`
-      );
-    }
-
-    // Step 2: Parse amount → integer lamports (BigInt to match SPL Token expectation)
-    const amountFloat = parseFloat(challenge.amount);
-    if (!isFinite(amountFloat) || amountFloat <= 0) {
-      throw new Error(`Invalid payment amount: "${challenge.amount}"`);
-    }
-    const lamports = BigInt(Math.round(amountFloat * Math.pow(10, USDC_DECIMALS)));
-
-    const recipientPubkey = new PublicKey(challenge.address);
-    const payerPubkey = this.keypair.publicKey;
-
-    // Step 3: Get/create payer ATA
-    const payerAta = await getOrCreateAssociatedTokenAccount(
-      this.connection,
-      this.keypair,
-      this.usdcMint,
-      payerPubkey
-    );
-
-    // Step 4: Get/create recipient ATA
-    const recipientAta = await getOrCreateAssociatedTokenAccount(
-      this.connection,
-      this.keypair,
-      this.usdcMint,
-      recipientPubkey
-    );
-
-    // Step 5: Build transfer_checked instruction
-    const transferIx = createTransferCheckedInstruction(
-      payerAta.address,
-      this.usdcMint,
-      recipientAta.address,
-      payerPubkey,
-      lamports,
-      USDC_DECIMALS,
-      [],
-      TOKEN_PROGRAM_ID
-    );
-
-    // Step 6: Attach Memo — mirrors Python: f"Ag402-v1|{request_id}"
-    const memoIx = createMemoInstruction(`Ag402-v1|${requestId}`, [payerPubkey]);
-
-    // Step 7: Build, sign, send, confirm
-    const tx = new Transaction().add(transferIx, memoIx);
-    const signature = await this.connection.sendTransaction(tx, [this.keypair]);
-    await this.connection.confirmTransaction(signature, "confirmed");
-
-    // Step 8: Return tx hash
-    return signature;
+  // pay() and fromEnv() are stubbed here — implemented in Task 5.
+  // This keeps the TDD red-green cycle: tests written first (Task 3), then stubs
+  // make constructor/getAddress tests green, then full pay() implemented in Task 5.
+  async pay(_challenge: X402PaymentChallenge, _requestId: string): Promise<string> {
+    throw new Error("pay() not implemented yet");
   }
 }
 
-// ─── fromEnv ─────────────────────────────────────────────────────────────────
-
-/**
- * Construct SolanaPaymentProvider from environment variables.
- * Mirrors Python config.py: reads SOLANA_PRIVATE_KEY.
- *
- * @throws {Error} if SOLANA_PRIVATE_KEY is not set
- */
-export function fromEnv(options?: { rpcUrl?: string }): SolanaPaymentProvider {
-  const privateKey = process.env.SOLANA_PRIVATE_KEY;
-  if (!privateKey) {
-    throw new Error(
-      "SOLANA_PRIVATE_KEY environment variable is not set. " +
-        "Set it to your base58-encoded Solana private key."
-    );
-  }
-  return new SolanaPaymentProvider({ privateKey, ...options });
+// ─── fromEnv (stub — implemented in Task 5) ──────────────────────────────────
+export function fromEnv(_options?: { rpcUrl?: string }): SolanaPaymentProvider {
+  throw new Error("fromEnv() not implemented yet");
 }
 ```
 
-- [ ] **Step 2: Run constructor + getAddress tests only**
+- [ ] **Step 2: Run constructor + getAddress tests to confirm GREEN**
 
 ```bash
 cd sdk/solana && npm test -- --reporter=verbose
 ```
 
-Expected: constructor describe (4 tests) + getAddress describe (2 tests) = **6 tests PASS**. `pay()` and `fromEnv()` tests are not written yet.
+Expected: constructor describe (4 tests) + getAddress describe (2 tests) = **6 tests PASS**.
+`pay()` stub will throw "not implemented yet" — but no pay() tests are written yet, so overall: 6 PASS, 0 FAIL.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit stub implementation**
 
 ```bash
-git add src/index.ts && git commit -m "feat(solana): implement SolanaPaymentProvider constructor + getAddress"
+git add src/index.ts && git commit -m "feat(solana): implement constructor + getAddress (pay/fromEnv stubbed)"
 ```
 
 ---
 
 ## Chunk 3: TDD — pay() happy path
 
-### Task 5: Write failing pay() happy path tests, then verify they pass
+### Task 5: Write failing pay() tests → implement pay() + fromEnv() → green
 
 **Files:**
 - Modify: `sdk/solana/src/__tests__/solana-provider.test.ts`
+- Modify: `sdk/solana/src/index.ts`
 
-- [ ] **Step 1: Append pay() happy path tests to test file**
+Also update the mock for `Connection` in `solana-provider.test.ts` — the `Connection` factory now needs to include `getLatestBlockhash` (required by the real `pay()` implementation):
+
+Find the `Connection: vi.fn().mockImplementation(...)` block in `solana-provider.test.ts` and update it:
+
+```typescript
+Connection: vi.fn().mockImplementation(() => ({
+  getLatestBlockhash: vi.fn().mockResolvedValue({
+    blockhash: "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+    lastValidBlockHeight: 999999,
+  }),
+  sendTransaction: vi.fn().mockResolvedValue("5xFakeTxSignature111111111111111111111111111111"),
+  confirmTransaction: vi.fn().mockResolvedValue({ value: { err: null } }),
+})),
+```
+
+- [ ] **Step 1: Update Connection mock to include getLatestBlockhash**
+
+In `sdk/solana/src/__tests__/solana-provider.test.ts`, find and replace the `Connection` mock implementation to add `getLatestBlockhash` as shown above.
+
+- [ ] **Step 2: Append pay() happy path tests to test file**
 
 Add after the `getAddress()` describe block in `solana-provider.test.ts`:
 
@@ -586,7 +523,116 @@ describe("SolanaPaymentProvider — pay() happy path", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests — all 10 should pass**
+- [ ] **Step 3: Run tests — confirm pay() tests are RED (stub throws "not implemented")**
+
+```bash
+cd sdk/solana && npm test -- --reporter=verbose
+```
+
+Expected: 6 PASS (constructor + getAddress) + 4 FAIL (pay() still stubbed). Failure message should include "not implemented yet".
+
+- [ ] **Step 4: Implement full pay() and fromEnv() in src/index.ts**
+
+Replace the stub bodies in `sdk/solana/src/index.ts` with the full implementation:
+
+```typescript
+  async pay(challenge: X402PaymentChallenge, requestId: string): Promise<string> {
+    // Step 1: Validate — throw immediately, no RPC calls
+    if (challenge.chain !== "solana") {
+      throw new Error(
+        `Unsupported chain: "${challenge.chain}". @ag402/solana only supports "solana".`
+      );
+    }
+    if (challenge.token !== "USDC") {
+      throw new Error(
+        `Unsupported token: "${challenge.token}". @ag402/solana only supports "USDC".`
+      );
+    }
+
+    // Step 2: Parse amount → integer lamports (BigInt required by SPL Token)
+    const amountFloat = parseFloat(challenge.amount);
+    if (!isFinite(amountFloat) || amountFloat <= 0) {
+      throw new Error(`Invalid payment amount: "${challenge.amount}"`);
+    }
+    const lamports = BigInt(Math.round(amountFloat * Math.pow(10, USDC_DECIMALS)));
+
+    const recipientPubkey = new PublicKey(challenge.address);
+    const payerPubkey = this.keypair.publicKey;
+
+    // Step 3: Get/create payer ATA
+    const payerAta = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.keypair,
+      this.usdcMint,
+      payerPubkey
+    );
+
+    // Step 4: Get/create recipient ATA
+    const recipientAta = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.keypair,
+      this.usdcMint,
+      recipientPubkey
+    );
+
+    // Step 5: Build transfer_checked instruction
+    const transferIx = createTransferCheckedInstruction(
+      payerAta.address,
+      this.usdcMint,
+      recipientAta.address,
+      payerPubkey,
+      lamports,
+      USDC_DECIMALS,
+      [],
+      TOKEN_PROGRAM_ID
+    );
+
+    // Step 6: Attach Memo — mirrors Python: f"Ag402-v1|{request_id}"
+    const memoIx = createMemoInstruction(`Ag402-v1|${requestId}`, [payerPubkey]);
+
+    // Step 7: Fetch blockhash, build tx, sign, send, confirm.
+    // recentBlockhash + feePayer MUST be set before sendTransaction.
+    // confirmTransaction uses BlockheightBasedTransactionConfirmationStrategy
+    // (string-only overload is deprecated in @solana/web3.js v1.98).
+    const { blockhash, lastValidBlockHeight } =
+      await this.connection.getLatestBlockhash("confirmed");
+    const tx = new Transaction();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = payerPubkey;
+    tx.add(transferIx, memoIx);
+
+    const signature = await this.connection.sendTransaction(tx, [this.keypair]);
+    await this.connection.confirmTransaction(
+      { blockhash, lastValidBlockHeight, signature },
+      "confirmed"
+    );
+
+    // Step 8: Return tx hash
+    return signature;
+  }
+}
+
+// ─── fromEnv ─────────────────────────────────────────────────────────────────
+
+/**
+ * Construct SolanaPaymentProvider from environment variables.
+ * Mirrors Python config.py: reads SOLANA_PRIVATE_KEY.
+ *
+ * @throws {Error} if SOLANA_PRIVATE_KEY is not set
+ */
+export function fromEnv(options?: { rpcUrl?: string }): SolanaPaymentProvider {
+  const privateKey = process.env.SOLANA_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new Error(
+      "SOLANA_PRIVATE_KEY environment variable is not set. " +
+        "Set it to your base58-encoded Solana private key."
+    );
+  }
+  return new SolanaPaymentProvider({ privateKey, ...options });
+}
+```
+
+- [ ] **Step 5: Run tests — all 10 should pass**
 
 ```bash
 cd sdk/solana && npm test
@@ -594,10 +640,10 @@ cd sdk/solana && npm test
 
 Expected: 6 (previous) + 4 (new) = **10 tests PASS**.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/__tests__/solana-provider.test.ts && git commit -m "test(solana): add + pass pay() happy path tests"
+git add src/__tests__/solana-provider.test.ts src/index.ts && git commit -m "feat(solana): implement pay() and fromEnv() — TDD green"
 ```
 
 ---
@@ -651,8 +697,9 @@ describe("SolanaPaymentProvider — pay() error handling", () => {
 
   it("throws when sendTransaction fails", async () => {
     const { Connection } = await import("@solana/web3.js");
-    // Override Connection mock for this test: sendTransaction rejects
+    // Override Connection mock for this test — must include getLatestBlockhash
     vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 }),
       sendTransaction: vi.fn().mockRejectedValue(new Error("RPC connection refused")),
       confirmTransaction: vi.fn(),
     }));
@@ -666,6 +713,7 @@ describe("SolanaPaymentProvider — pay() error handling", () => {
   it("throws when confirmTransaction fails", async () => {
     const { Connection } = await import("@solana/web3.js");
     vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 }),
       sendTransaction: vi.fn().mockResolvedValue("5xFakeSig"),
       confirmTransaction: vi.fn().mockRejectedValue(new Error("Confirmation timeout")),
     }));
@@ -917,8 +965,8 @@ cd sdk/solana && git add README.md && git commit -m "docs(solana): add @ag402/so
 | Chunk | Tasks | Files | Key output |
 |-------|-------|-------|------------|
 | 1 — Scaffold | 1–2 | `package.json`, `tsconfig.json`, `vitest.config.ts` | Package configured with all deps |
-| 2 — Constructor + getAddress TDD | 3–4 | `src/__tests__/...`, `src/index.ts` | 6 tests green |
-| 3 — pay() happy path TDD | 5 | `src/__tests__/...` | 10 tests green |
+| 2 — Constructor + getAddress TDD | 3–4 | `src/__tests__/...`, `src/index.ts` (stub) | 6 tests green, pay()/fromEnv() stubbed |
+| 3 — pay() TDD (red→implement→green) | 5 | `src/__tests__/...`, `src/index.ts` | 10 tests green |
 | 4 — Error + fromEnv TDD | 6 | `src/__tests__/...` | 17 tests green |
 | 5 — Build + regression | 7–9 | — | lint clean, dist valid, 96 Python + 17 TS pass |
 | 6 — README | 10 | `README.md` | Published docs |
@@ -927,7 +975,10 @@ cd sdk/solana && git add README.md && git commit -m "docs(solana): add @ag402/so
 - Use `bs58.decode()` for private key — NEVER `Buffer.from(..., "base58")`
 - Memo format: exactly `Ag402-v1|{requestId}` (capital A, pipe separator)
 - USDC lamports: `BigInt(Math.round(amount × 10^6))` — BigInt required by SPL Token
+- `recentBlockhash` + `feePayer` MUST be set on Transaction before `sendTransaction`
+- Use `BlockheightBasedTransactionConfirmationStrategy` for `confirmTransaction` (not string-only overload)
 - Default RPC: devnet — mainnet requires explicit `rpcUrl`
 - All `pay()` failures → `throw` → triggers `@ag402/fetch` rollback path
 - `getAddress()` strips `\r`, `\n`, `"` (header injection safety)
 - `vi.clearAllMocks()` in `beforeEach` — NOT `vi.resetAllMocks()` (which strips factory return values and breaks all tests after the first)
+- `mockImplementationOnce` overrides for Connection must include `getLatestBlockhash`
