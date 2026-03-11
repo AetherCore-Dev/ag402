@@ -71,15 +71,111 @@ export class SolanaPaymentProvider implements PaymentProvider {
     return addr.replace(/[\r\n"]/g, "");
   }
 
-  // pay() and fromEnv() are stubbed here — implemented in Task 5.
-  // This keeps the TDD red-green cycle: tests written first (Task 3), then stubs
-  // make constructor/getAddress tests green, then full pay() implemented in Task 5.
-  async pay(_challenge: X402PaymentChallenge, _requestId: string): Promise<string> {
-    throw new Error("pay() not implemented yet");
+  /**
+   * Pay the x402 challenge by broadcasting a real USDC transfer on Solana.
+   * Mirrors Python SolanaAdapter.pay() exactly.
+   *
+   * Steps:
+   *   1. Validate chain + token
+   *   2. Parse amount string → lamports (× 10^6)
+   *   3. Get/create payer ATA
+   *   4. Get/create recipient ATA
+   *   5. Build transfer_checked instruction
+   *   6. Attach Memo: "Ag402-v1|{requestId}"
+   *   7. Fetch blockhash, build tx, sign, send, confirm
+   *   8. Return base58 tx signature
+   */
+  async pay(challenge: X402PaymentChallenge, requestId: string): Promise<string> {
+    // Step 1: Validate — throw immediately, no RPC calls
+    if (challenge.chain !== "solana") {
+      throw new Error(
+        `Unsupported chain: "${challenge.chain}". @ag402/solana only supports "solana".`
+      );
+    }
+    if (challenge.token !== "USDC") {
+      throw new Error(
+        `Unsupported token: "${challenge.token}". @ag402/solana only supports "USDC".`
+      );
+    }
+
+    // Step 2: Parse amount → integer lamports (BigInt required by SPL Token)
+    const amountFloat = parseFloat(challenge.amount);
+    if (!isFinite(amountFloat) || amountFloat <= 0) {
+      throw new Error(`Invalid payment amount: "${challenge.amount}"`);
+    }
+    const lamports = BigInt(Math.round(amountFloat * Math.pow(10, USDC_DECIMALS)));
+
+    const recipientPubkey = new PublicKey(challenge.address);
+    const payerPubkey = this.keypair.publicKey;
+
+    // Step 3: Get/create payer ATA
+    const payerAta = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.keypair,
+      this.usdcMint,
+      payerPubkey
+    );
+
+    // Step 4: Get/create recipient ATA
+    const recipientAta = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.keypair,
+      this.usdcMint,
+      recipientPubkey
+    );
+
+    // Step 5: Build transfer_checked instruction
+    const transferIx = createTransferCheckedInstruction(
+      payerAta.address,
+      this.usdcMint,
+      recipientAta.address,
+      payerPubkey,
+      lamports,
+      USDC_DECIMALS,
+      [],
+      TOKEN_PROGRAM_ID
+    );
+
+    // Step 6: Attach Memo — mirrors Python: f"Ag402-v1|{request_id}"
+    const memoIx = createMemoInstruction(`Ag402-v1|${requestId}`, [payerPubkey]);
+
+    // Step 7: Fetch blockhash, build tx, sign, send, confirm.
+    // recentBlockhash + feePayer MUST be set before sendTransaction.
+    // confirmTransaction uses BlockheightBasedTransactionConfirmationStrategy
+    // (string-only overload is deprecated in @solana/web3.js v1.98).
+    const { blockhash, lastValidBlockHeight } =
+      await this.connection.getLatestBlockhash("confirmed");
+    const tx = new Transaction();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = payerPubkey;
+    tx.add(transferIx, memoIx);
+
+    const signature = await this.connection.sendTransaction(tx, [this.keypair]);
+    await this.connection.confirmTransaction(
+      { blockhash, lastValidBlockHeight, signature },
+      "confirmed"
+    );
+
+    // Step 8: Return tx hash
+    return signature;
   }
 }
 
-// ─── fromEnv (stub — implemented in Task 5) ──────────────────────────────────
-export function fromEnv(_options?: { rpcUrl?: string }): SolanaPaymentProvider {
-  throw new Error("fromEnv() not implemented yet");
+// ─── fromEnv ─────────────────────────────────────────────────────────────────
+
+/**
+ * Construct SolanaPaymentProvider from environment variables.
+ * Mirrors Python config.py: reads SOLANA_PRIVATE_KEY.
+ *
+ * @throws {Error} if SOLANA_PRIVATE_KEY is not set
+ */
+export function fromEnv(options?: { rpcUrl?: string }): SolanaPaymentProvider {
+  const privateKey = process.env.SOLANA_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new Error(
+      "SOLANA_PRIVATE_KEY environment variable is not set. " +
+        "Set it to your base58-encoded Solana private key."
+    );
+  }
+  return new SolanaPaymentProvider({ privateKey, ...options });
 }

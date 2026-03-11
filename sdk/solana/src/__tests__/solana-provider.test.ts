@@ -14,6 +14,10 @@ vi.mock("@solana/web3.js", () => {
   };
   return {
     Connection: vi.fn().mockImplementation(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({
+        blockhash: "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+        lastValidBlockHeight: 999999,
+      }),
       sendTransaction: vi.fn().mockResolvedValue("5xFakeTxSignature111111111111111111111111111111"),
       confirmTransaction: vi.fn().mockResolvedValue({ value: { err: null } }),
     })),
@@ -120,5 +124,57 @@ describe("SolanaPaymentProvider — getAddress()", () => {
     const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
     const addr = provider.getAddress();
     expect(addr).not.toMatch(/[\r\n"]/);
+  });
+});
+
+// ─── Test: pay() happy path ──────────────────────────────────────────────────
+describe("SolanaPaymentProvider — pay() happy path", () => {
+  const VALID_KEY = "4NMwxzmYj2uvHuq8xoqhY8RXg63KSVJM1DXkpbmkUY7YQWoVrk7DqEDsomePvYKqU1h7H4P1DpxJnrZMHNF6Abt";
+  const VALID_CHALLENGE: { chain: string; token: string; amount: string; address: string } = {
+    chain: "solana",
+    token: "USDC",
+    amount: "0.05",
+    address: "SellerAddr111111111111111111111111111111111",
+  };
+  const REQUEST_ID = "abcdef1234567890abcdef1234567890";
+
+  it("returns a non-empty tx signature string", async () => {
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    const txHash = await provider.pay(VALID_CHALLENGE, REQUEST_ID);
+    expect(typeof txHash).toBe("string");
+    expect(txHash.length).toBeGreaterThan(0);
+  });
+
+  it("memo instruction is called with exactly 'Ag402-v1|{requestId}'", async () => {
+    const { createMemoInstruction } = await import("@solana/spl-memo");
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await provider.pay(VALID_CHALLENGE, REQUEST_ID);
+    expect(createMemoInstruction).toHaveBeenCalledWith(
+      `Ag402-v1|${REQUEST_ID}`,
+      expect.any(Array)
+    );
+  });
+
+  it("transfer_checked is called with correct lamport count (0.05 USDC = 50_000 lamports)", async () => {
+    const { createTransferCheckedInstruction } = await import("@solana/spl-token");
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await provider.pay(VALID_CHALLENGE, REQUEST_ID);
+    expect(createTransferCheckedInstruction).toHaveBeenCalledWith(
+      expect.anything(),  // payerAta.address
+      expect.anything(),  // usdcMint
+      expect.anything(),  // recipientAta.address
+      expect.anything(),  // payerPubkey
+      BigInt(50_000),     // lamports: 0.05 × 10^6
+      6,                  // USDC_DECIMALS
+      [],
+      expect.anything()   // TOKEN_PROGRAM_ID
+    );
+  });
+
+  it("getOrCreateAssociatedTokenAccount is called twice (payer ATA + recipient ATA)", async () => {
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await provider.pay(VALID_CHALLENGE, REQUEST_ID);
+    expect(getOrCreateAssociatedTokenAccount).toHaveBeenCalledTimes(2);
   });
 });
