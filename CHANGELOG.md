@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`@ag402/fetch` v0.1.0** — TypeScript SDK for x402 auto-payment (`sdk/typescript/`).
+  - `createX402Fetch({ wallet, provider?, config?, paymentTimeoutMs? })` — wraps the native `fetch()` to auto-handle HTTP 402 Payment Required
+  - `InMemoryWallet` — micro-unit arithmetic (avoids float drift), deduct/rollback/deposit; rejects NaN/Infinity balance
+  - `Wallet` / `PaymentProvider` interfaces — drop-in custom implementations
+  - `MockPaymentProvider` — test-mode provider (fake tx hash, no Solana transaction); warns in production environments
+  - `X402FetchMeta.blocked` — distinguishes local budget rejection from server-returned 402
+  - `getTotalSpent()` — method on the returned fetch function for spend tracking across calls
+  - `paymentTimeoutMs` — configurable timeout for provider.pay() with automatic wallet rollback
+  - Full protocol utilities: `parseWwwAuthenticate`, `buildWwwAuthenticate`, `parseAuthorization`, `buildAuthorization`, `parseAmount`, `descriptorToChallenge`
+  - `attachMeta` with Proxy fallback — safe property attachment for frozen `Response` objects (Bun/Deno/CF Workers)
+  - Config array defensive copy — external mutation after construction cannot affect accepted chains/tokens
+  - All construction options validated fail-fast (maxAmountPerCall, maxTotalSpend, acceptedChains, acceptedTokens, paymentTimeoutMs)
+  - `buildAuthorization` fallback after on-chain payment — unsafe `provider.getAddress()` return value cannot crash post-payment
+  - TypeScript types: `Wallet`, `X402FetchFunction`, `X402FetchMeta`, `X402PaymentChallenge`, `X402PaymentProof`, `X402ServiceDescriptor`
+  - Zero runtime dependencies; Node.js 18+; dual ESM + CJS
+  - 100 tests across 3 files (wallet, protocol, fetch)
+
 ## [0.1.17] - 2026-03-10
 
 ### Added
