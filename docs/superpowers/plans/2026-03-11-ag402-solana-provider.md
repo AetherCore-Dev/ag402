@@ -6,7 +6,7 @@
 
 **Architecture:** Single-file `sdk/solana/src/index.ts` exports `SolanaPaymentProvider` + `fromEnv()`. Uses `@solana/web3.js` + `@solana/spl-token` + `@solana/spl-memo` for ATA creation, SPL `transfer_checked`, and memo injection. `bs58` decodes private key from base58. Memo format `Ag402-v1|{requestId}` mirrors Python exactly.
 
-**Tech Stack:** TypeScript 5.7, `@solana/web3.js ^1.98`, `@solana/spl-token ^0.4`, `@solana/spl-memo ^0.3`, `bs58 ^6.0`, Vitest 2, tsup (build), Node >=18
+**Tech Stack:** TypeScript 5.7, `@solana/web3.js ^1.98`, `@solana/spl-token ^0.4`, `@solana/spl-memo ^0.2.5`, `bs58 ^6.0`, Vitest 2, tsup (build), Node >=18
 
 ---
 
