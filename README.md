@@ -9,7 +9,7 @@
     <a href="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml"><img src="https://github.com/AetherCore-Dev/ag402/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/tests-648%2B_passing-brightgreen" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-748%2B_passing-brightgreen" alt="Tests" />
     <img src="https://img.shields.io/badge/coverage-90%25+-brightgreen" alt="Coverage" />
     <img src="https://img.shields.io/badge/security_audits-4_rounds-blue" alt="Security Audits" />
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python" />
@@ -52,7 +52,7 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 
 ### Battle-tested
 - [Token RugCheck](https://github.com/AetherCore-Dev/token-rugcheck) — **live on Solana mainnet** with real USDC payments
-- 648+ tests, 90%+ coverage, 4 security audits (24/24 issues fixed)
+- 748+ tests, 90%+ coverage, 4 security audits (24/24 issues fixed)
 - Multi-endpoint RPC failover + circuit breaker + async delivery retry
 
 ### Blazing fast
@@ -74,6 +74,7 @@ Agent calls API → 402 Payment Required → Ag402 auto-pays USDC on Solana → 
 - OpenClaw — **native Skill** (SKILL.md + TOOLS.md + skill.py), not just MCP
 - LangChain, AutoGen, CrewAI, Semantic Kernel — works automatically
 - Any Python agent using `httpx` or `requests` — zero changes
+- **TypeScript/Node.js agents** — `@ag402/fetch` npm package, zero dependencies
 
 ---
 
@@ -289,7 +290,7 @@ Buyers can then discover packages at `GET /prepaid/packages` and purchase at `PO
 
 Your agent holds private keys and moves real USDC. Security is not a feature — it's the foundation.
 
-**4 rounds of security audits** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 648+ total tests · 90%+ coverage
+**4 rounds of security audits** · 24 issues found, **24 fixed** · **109 dedicated security TDD tests** · 748+ total tests · 90%+ coverage
 
 ### 6-Layer Budget Protection
 
@@ -316,7 +317,7 @@ Your agent holds private keys and moves real USDC. Security is not a feature —
 
 ### CI Pipeline (Every PR)
 
-CodeQL · Trivy · pip-audit · Semgrep · 648+ tests · 90%+ coverage · OpenSSF Scorecard
+CodeQL · Trivy · pip-audit · Semgrep · 748+ tests · 90%+ coverage · OpenSSF Scorecard
 
 ---
 
@@ -381,12 +382,13 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 
 ## Packages
 
-| Package | PyPI | Role |
-|---------|------|------|
+| Package | Registry | Role |
+|---------|----------|------|
 | [`open402`](https://pypi.org/project/open402/) | [![PyPI](https://img.shields.io/pypi/v/open402)](https://pypi.org/project/open402/) | Protocol standard — **zero dependencies** |
 | [`ag402-core`](https://pypi.org/project/ag402-core/) | [![PyPI](https://img.shields.io/pypi/v/ag402-core)](https://pypi.org/project/ag402-core/) | Payment engine + CLI + wallet (buyer) |
 | [`ag402-mcp`](https://pypi.org/project/ag402-mcp/) | [![PyPI](https://img.shields.io/pypi/v/ag402-mcp)](https://pypi.org/project/ag402-mcp/) | Reverse-proxy gateway (seller) — **zero code changes** |
 | [`ag402-client-mcp`](https://pypi.org/project/ag402-client-mcp/) | [![PyPI](https://img.shields.io/pypi/v/ag402-client-mcp)](https://pypi.org/project/ag402-client-mcp/) | MCP client for AI tools (buyer) |
+| [`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch) | [![npm](https://img.shields.io/npm/v/@ag402/fetch)](https://www.npmjs.com/package/@ag402/fetch) | TypeScript/Node.js buyer SDK — **zero runtime deps** |
 
 ---
 
@@ -417,6 +419,7 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 | Resource | Description |
 |----------|-------------|
 | **[llms.txt](llms.txt)** | AI-readable CLI reference — paste into your agent's context |
+| **[TypeScript SDK README](sdk/typescript/README.md)** | `@ag402/fetch` — Node.js/Bun/Deno buyer SDK |
 | **[Claude Code Guide](docs/guide-claude-code.md)** | Step-by-step MCP integration |
 | **[Cursor Guide](docs/guide-cursor.md)** | Step-by-step MCP integration |
 | **[OpenClaw Guide](docs/guide-openclaw.md)** | Native Skill + MCP integration |
@@ -430,7 +433,16 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 
 ---
 
-## Quick Copy-Paste
+**TypeScript/Node.js** (zero dependencies):
+```bash
+npm install @ag402/fetch
+```
+```typescript
+import { createX402Fetch, InMemoryWallet } from "@ag402/fetch";
+const fetch = createX402Fetch({ wallet: new InMemoryWallet(100) });
+const res = await fetch("https://paid-api.example.com/data");
+// 402 → auto-pays USDC → retries → 200 OK
+```
 
 **Agent user** (zero code changes):
 ```bash
@@ -464,35 +476,39 @@ pip install ag402-core ag402-mcp && ag402 serve --target http://your-api:8000 --
 | ✅ Solana USDC payments | **Shipped** | Standard x402 on-chain payments (~0.5s) |
 | ✅ Prepaid system | **Shipped** | HMAC credentials, ~1ms, zero gas per call |
 | ✅ Claude Code / Cursor / OpenClaw | **Shipped** | One-command install, native MCP support |
-| ✅ 4 security audits | **Shipped** | 24/24 issues fixed, 588+ tests |
-| 🔜 **TypeScript SDK** | **Next** | `ag402-ts` — bring x402 payments to the JS/TS ecosystem. Express/Fastify middleware, Vercel/Cloudflare edge support |
+| ✅ 4 security audits | **Shipped** | 24/24 issues fixed, 748+ tests |
+| ✅ **TypeScript SDK** | **Shipped** | [`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch) — zero-dep Node.js/Bun/Deno buyer SDK. 100 tests, dual ESM+CJS, full protocol utilities |
+| 🔜 `@ag402/solana` | Planned | Real Solana USDC payment provider for TypeScript |
 | 🔜 Multi-chain | Planned | Base, Polygon, Arbitrum USDC support |
 | 🔜 Stripe fallback | Planned | Fiat payment fallback for non-crypto users |
 | 🔜 Dashboard | Planned | Web UI for sellers — revenue, analytics, API keys |
 
-### TypeScript SDK (Coming Soon)
+### TypeScript SDK — Now Available
 
-The next major milestone: **`ag402-ts`** — a TypeScript implementation of ag402 for the Node.js/Deno/Bun ecosystem.
+**[`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch)** is the TypeScript buyer-side SDK for the x402 auto-payment protocol.
 
-```typescript
-// Seller: Express middleware (coming soon)
-import { ag402 } from 'ag402-ts';
-
-app.use('/api', ag402({ price: '0.01', address: '<SolanaAddress>' }));
-
-// Buyer: Auto-pay fetch wrapper (coming soon)
-import { enableAutoPay } from 'ag402-ts/client';
-
-enableAutoPay(); // All 402 responses are auto-paid
-const data = await fetch('https://paid-api.example.com/data');
+```bash
+npm install @ag402/fetch
 ```
 
-Why TypeScript?
-- MCP ecosystem is ~50% TypeScript (FastMCP-TS, official SDK)
-- Vercel/Cloudflare edge functions need native TS support
-- npm > PyPI in total package installs
+```typescript
+import { createX402Fetch, InMemoryWallet, MockPaymentProvider } from "@ag402/fetch";
 
-**Want to contribute or beta test?** [Open an issue](https://github.com/AetherCore-Dev/ag402/issues) or reach out on [X @AetherCoreDev](https://x.com/AetherCoreDev).
+const wallet = new InMemoryWallet(100); // $100 budget
+const apiFetch = createX402Fetch({
+  wallet,
+  provider: new MockPaymentProvider(), // swap for @ag402/solana in production
+  config: { maxAmountPerCall: 1.00, maxTotalSpend: 50.00 },
+});
+
+const res = await apiFetch("https://paid-api.example.com/data");
+// 402 Payment Required → auto-pays → retries → 200 OK
+console.log(res.x402.paymentMade, res.x402.amountPaid, res.x402.txHash);
+```
+
+**Features:** Zero runtime dependencies · Node.js 18+ / Bun / Deno · Dual ESM+CJS · 100 tests · Full protocol utilities · `paymentTimeoutMs` with wallet rollback · `blocked` field to distinguish local budget rejection from server 402
+
+[→ Full TypeScript SDK documentation](sdk/typescript/README.md)
 
 ---
 
