@@ -178,3 +178,97 @@ describe("SolanaPaymentProvider — pay() happy path", () => {
     expect(getOrCreateAssociatedTokenAccount).toHaveBeenCalledTimes(2);
   });
 });
+
+// ─── Test: pay() error handling ──────────────────────────────────────────────
+describe("SolanaPaymentProvider — pay() error handling", () => {
+  const VALID_KEY = "4NMwxzmYj2uvHuq8xoqhY8RXg63KSVJM1DXkpbmkUY7YQWoVrk7DqEDsomePvYKqU1h7H4P1DpxJnrZMHNF6Abt";
+  const REQUEST_ID = "abcdef1234567890abcdef1234567890";
+
+  it("throws immediately for chain !== 'solana', without calling RPC", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    // Track the connection instance created for this provider
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    // Get the mock connection instance (Connection is called as constructor → result is last mock call's return)
+    const mockConn = vi.mocked(Connection).mock.results.at(-1)?.value as {
+      sendTransaction: ReturnType<typeof vi.fn>;
+    };
+
+    await expect(
+      provider.pay({ chain: "base", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow(/Unsupported chain/);
+
+    expect(mockConn.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws immediately for token !== 'USDC', without calling RPC", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    const mockConn = vi.mocked(Connection).mock.results.at(-1)?.value as {
+      sendTransaction: ReturnType<typeof vi.fn>;
+    };
+
+    await expect(
+      provider.pay({ chain: "solana", token: "BONK", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow(/Unsupported token/);
+
+    expect(mockConn.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws when sendTransaction fails", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    // Override Connection mock for this test — must include getLatestBlockhash
+    vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 }),
+      sendTransaction: vi.fn().mockRejectedValue(new Error("RPC connection refused")),
+      confirmTransaction: vi.fn(),
+    }));
+
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await expect(
+      provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow("RPC connection refused");
+  });
+
+  it("throws when confirmTransaction fails", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 }),
+      sendTransaction: vi.fn().mockResolvedValue("5xFakeSig"),
+      confirmTransaction: vi.fn().mockRejectedValue(new Error("Confirmation timeout")),
+    }));
+
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await expect(
+      provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow("Confirmation timeout");
+  });
+});
+
+// ─── Test: fromEnv() ─────────────────────────────────────────────────────────
+describe("fromEnv()", () => {
+  const VALID_KEY = "4NMwxzmYj2uvHuq8xoqhY8RXg63KSVJM1DXkpbmkUY7YQWoVrk7DqEDsomePvYKqU1h7H4P1DpxJnrZMHNF6Abt";
+
+  afterEach(() => {
+    delete process.env.SOLANA_PRIVATE_KEY;
+  });
+
+  it("constructs provider from SOLANA_PRIVATE_KEY env var", () => {
+    process.env.SOLANA_PRIVATE_KEY = VALID_KEY;
+    expect(() => fromEnv()).not.toThrow();
+  });
+
+  it("throws a clear error when SOLANA_PRIVATE_KEY is not set", () => {
+    delete process.env.SOLANA_PRIVATE_KEY;
+    expect(() => fromEnv()).toThrow(/SOLANA_PRIVATE_KEY/);
+  });
+
+  it("passes custom rpcUrl to the underlying provider", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    process.env.SOLANA_PRIVATE_KEY = VALID_KEY;
+    fromEnv({ rpcUrl: "https://api.mainnet-beta.solana.com" });
+    expect(Connection).toHaveBeenCalledWith(
+      "https://api.mainnet-beta.solana.com",
+      expect.anything()
+    );
+  });
+});
