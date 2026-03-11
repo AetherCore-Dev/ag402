@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agentpayments/ag402.git",
+    "url": "git+https://github.com/agentpayments/ag402.git",
     "directory": "sdk/typescript"
   },
   "homepage": "https://github.com/agentpayments/ag402/tree/main/sdk/typescript#readme",
