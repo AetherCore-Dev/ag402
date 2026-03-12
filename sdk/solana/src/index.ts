@@ -41,6 +41,12 @@ export interface SolanaPaymentProviderOptions {
   rpcUrl?: string;
   /** USDC mint address. Defaults to devnet USDC mint. */
   usdcMint?: string;
+  /**
+   * Transaction confirmation level.
+   * - "confirmed" (default): ~12–16 seconds, 2/3 validator votes. Fine for micropayments.
+   * - "finalized": ~48 seconds, no rollback possible. Recommended for >$100 payments.
+   */
+  confirmationLevel?: "confirmed" | "finalized";
 }
 
 // ─── SolanaPaymentProvider ───────────────────────────────────────────────────
@@ -49,15 +55,17 @@ export class SolanaPaymentProvider implements PaymentProvider {
   private readonly connection: Connection;
   private readonly keypair: Keypair;
   private readonly usdcMint: PublicKey;
+  private readonly confirmationLevel: "confirmed" | "finalized";
 
   constructor(options: SolanaPaymentProviderOptions) {
     const rpcUrl = options.rpcUrl ?? DEVNET_RPC;
     const mintAddress = options.usdcMint ?? DEVNET_USDC_MINT;
+    this.confirmationLevel = options.confirmationLevel ?? "confirmed";
 
     // bs58.decode() throws for invalid input — do NOT use Buffer.from(..., "base58")
     // which silently falls back to UTF-8 and produces garbage bytes.
     this.keypair = Keypair.fromSecretKey(bs58.decode(options.privateKey));
-    this.connection = new Connection(rpcUrl, "confirmed");
+    this.connection = new Connection(rpcUrl, this.confirmationLevel);
     this.usdcMint = new PublicKey(mintAddress);
   }
 
@@ -78,12 +86,13 @@ export class SolanaPaymentProvider implements PaymentProvider {
    * Steps:
    *   1. Validate chain + token
    *   2. Parse amount string → lamports (× 10^6)
-   *   3. Get/create payer ATA
-   *   4. Get/create recipient ATA
+   *   3. Get/create recipient ATA (first — if this fails, no SOL wasted on payer ATA)
+   *   4. Get/create payer ATA
    *   5. Build transfer_checked instruction
    *   6. Attach Memo: "Ag402-v1|{requestId}"
    *   7. Fetch blockhash, build tx, sign, send, confirm
-   *   8. Return base58 tx signature
+   *   8. Check on-chain result — throw if value.err is set
+   *   9. Return base58 tx signature
    */
   async pay(challenge: X402PaymentChallenge, requestId: string): Promise<string> {
     // Step 1: Validate — throw immediately, no RPC calls
@@ -108,20 +117,22 @@ export class SolanaPaymentProvider implements PaymentProvider {
     const recipientPubkey = new PublicKey(challenge.address);
     const payerPubkey = this.keypair.publicKey;
 
-    // Step 3: Get/create payer ATA
-    const payerAta = await getOrCreateAssociatedTokenAccount(
-      this.connection,
-      this.keypair,
-      this.usdcMint,
-      payerPubkey
-    );
-
-    // Step 4: Get/create recipient ATA
+    // Step 3: Get/create recipient ATA first.
+    // If this fails (e.g. insufficient SOL for rent), we haven't yet spent SOL
+    // on the payer ATA, minimising wasted fees.
     const recipientAta = await getOrCreateAssociatedTokenAccount(
       this.connection,
       this.keypair,
       this.usdcMint,
       recipientPubkey
+    );
+
+    // Step 4: Get/create payer ATA
+    const payerAta = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.keypair,
+      this.usdcMint,
+      payerPubkey
     );
 
     // Step 5: Build transfer_checked instruction
@@ -144,19 +155,32 @@ export class SolanaPaymentProvider implements PaymentProvider {
     // confirmTransaction uses BlockheightBasedTransactionConfirmationStrategy
     // (string-only overload is deprecated in @solana/web3.js v1.98).
     const { blockhash, lastValidBlockHeight } =
-      await this.connection.getLatestBlockhash("confirmed");
+      await this.connection.getLatestBlockhash(this.confirmationLevel);
     const tx = new Transaction();
     tx.recentBlockhash = blockhash;
     tx.feePayer = payerPubkey;
     tx.add(transferIx, memoIx);
 
     const signature = await this.connection.sendTransaction(tx, [this.keypair]);
-    await this.connection.confirmTransaction(
+    const result = await this.connection.confirmTransaction(
       { blockhash, lastValidBlockHeight, signature },
-      "confirmed"
+      this.confirmationLevel
     );
 
-    // Step 8: Return tx hash
+    // Step 8: Check on-chain result.
+    // confirmTransaction resolves even when the transaction failed on-chain.
+    // value.err is non-null if the tx was confirmed but failed (e.g. insufficient
+    // USDC, program error). Without this check, pay() would return a signature
+    // for a failed transfer, causing @ag402/fetch to deduct the wallet without
+    // actually sending USDC — direct financial loss to the user.
+    if (result?.value.err) {
+      throw new Error(
+        `Payment transaction confirmed but failed on-chain: ${JSON.stringify(result.value.err)}. ` +
+          `Signature: ${signature}`
+      );
+    }
+
+    // Step 9: Return tx hash
     return signature;
   }
 }
@@ -169,7 +193,7 @@ export class SolanaPaymentProvider implements PaymentProvider {
  *
  * @throws {Error} if SOLANA_PRIVATE_KEY is not set
  */
-export function fromEnv(options?: { rpcUrl?: string }): SolanaPaymentProvider {
+export function fromEnv(options?: { rpcUrl?: string; confirmationLevel?: "confirmed" | "finalized" }): SolanaPaymentProvider {
   const privateKey = process.env.SOLANA_PRIVATE_KEY;
   if (!privateKey) {
     throw new Error(

@@ -107,6 +107,24 @@ describe("SolanaPaymentProvider — constructor", () => {
     });
     expect(() => new SolanaPaymentProvider({ privateKey: "not-valid-base58!!!" })).toThrow();
   });
+
+  it("uses 'confirmed' as default confirmationLevel", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    expect(Connection).toHaveBeenCalledWith(
+      expect.any(String),
+      "confirmed"
+    );
+  });
+
+  it("passes custom confirmationLevel to Connection", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    new SolanaPaymentProvider({ privateKey: VALID_KEY, confirmationLevel: "finalized" });
+    expect(Connection).toHaveBeenCalledWith(
+      expect.any(String),
+      "finalized"
+    );
+  });
 });
 
 // ─── Test: getAddress() ──────────────────────────────────────────────────────
@@ -171,11 +189,17 @@ describe("SolanaPaymentProvider — pay() happy path", () => {
     );
   });
 
-  it("getOrCreateAssociatedTokenAccount is called twice (payer ATA + recipient ATA)", async () => {
+  it("getOrCreateAssociatedTokenAccount is called twice: recipient first, then payer", async () => {
     const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
     const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
     await provider.pay(VALID_CHALLENGE, REQUEST_ID);
     expect(getOrCreateAssociatedTokenAccount).toHaveBeenCalledTimes(2);
+    // First call must use the recipient address (challenge.address), not payer
+    const firstCallOwner = vi.mocked(getOrCreateAssociatedTokenAccount).mock.calls[0][3];
+    const secondCallOwner = vi.mocked(getOrCreateAssociatedTokenAccount).mock.calls[1][3];
+    // recipient pubkey was constructed from VALID_CHALLENGE.address; payer pubkey has toBase58() = "PayerPubkey..."
+    expect((firstCallOwner as { toBase58?: () => string }).toBase58?.()).toBe(VALID_CHALLENGE.address);
+    expect((secondCallOwner as { toBase58?: () => string }).toBase58?.()).toMatch(/PayerPubkey/);
   });
 });
 
@@ -241,6 +265,23 @@ describe("SolanaPaymentProvider — pay() error handling", () => {
     await expect(
       provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
     ).rejects.toThrow("Confirmation timeout");
+  });
+
+  it("throws when on-chain transaction is confirmed but failed (value.err non-null)", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    // Simulates: transaction lands but fails on-chain (e.g. insufficient USDC)
+    vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 }),
+      sendTransaction: vi.fn().mockResolvedValue("5xFakeSig"),
+      confirmTransaction: vi.fn().mockResolvedValue({
+        value: { err: { InstructionError: [0, { Custom: 1 }] } },
+      }),
+    }));
+
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await expect(
+      provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow(/confirmed but failed on-chain/);
   });
 });
 
