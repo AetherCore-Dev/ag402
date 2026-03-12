@@ -30,7 +30,8 @@ import type { PaymentProvider, X402PaymentChallenge } from "@ag402/fetch";
 const DEVNET_RPC = "https://api.devnet.solana.com";
 const MAINNET_RPC_PATTERN = /mainnet/i;
 const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
-const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/** Official mainnet USDC mint — pass as `usdcMint` when using a mainnet RPC. */
+export const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /** USDC has 6 decimal places */
 const USDC_DECIMALS = 6;
 
@@ -125,9 +126,23 @@ export class SolanaPaymentProvider implements PaymentProvider {
       throw new Error(`Invalid payment amount: "${challenge.amount}"`);
     }
     const lamports = BigInt(Math.round(amountFloat * Math.pow(10, USDC_DECIMALS)));
+    // Guard: sub-minimum amounts (< 0.000001 USDC) round down to 0 lamports.
+    // A 0-value transfer costs SOL fees but sends no USDC, causing wallet deduction
+    // with no value delivered.
+    if (lamports === 0n) {
+      throw new Error(
+        `Payment amount too small: "${challenge.amount}" — minimum is 0.000001 USDC (1 lamport).`
+      );
+    }
 
     const recipientPubkey = new PublicKey(challenge.address);
     const payerPubkey = this.keypair.publicKey;
+
+    // Guard: self-payment creates a 0-net-value transfer (ATA → same ATA).
+    // It costs SOL fees and deducts from the wallet budget with no service delivered.
+    if (recipientPubkey.equals(payerPubkey)) {
+      throw new Error("Self-payment not allowed: recipient address matches payer address.");
+    }
 
     // Step 3: Get/create recipient ATA first.
     // If this fails (e.g. insufficient SOL for rent), we haven't yet spent SOL

@@ -27,6 +27,7 @@ vi.mock("@solana/web3.js", () => {
     PublicKey: vi.fn().mockImplementation((addr: string) => ({
       toBase58: () => addr,
       toString: () => addr,
+      equals: (other: { toBase58: () => string }) => addr === other.toBase58(),
     })),
     Transaction: vi.fn().mockImplementation(() => ({
       add: vi.fn().mockReturnThis(),
@@ -307,6 +308,25 @@ describe("SolanaPaymentProvider — pay() error handling", () => {
     ).rejects.toThrow("Insufficient SOL for rent");
     // Only one ATA creation was attempted
     expect(getOrCreateAssociatedTokenAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws for sub-minimum amount that rounds to 0 lamports (< 0.0000005 USDC)", async () => {
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    // 0.0000004 × 10^6 = 0.4 → Math.round → 0 → 0n — triggers the guard
+    await expect(
+      provider.pay({ chain: "solana", token: "USDC", amount: "0.0000004", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow(/amount too small/);
+  });
+
+  it("throws for self-payment (recipient === payer)", async () => {
+    // mockKeypair.publicKey.toBase58() returns "PayerPubkey1111111111111111111111111111111"
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await expect(
+      provider.pay(
+        { chain: "solana", token: "USDC", amount: "0.05", address: "PayerPubkey1111111111111111111111111111111" },
+        REQUEST_ID
+      )
+    ).rejects.toThrow(/Self-payment not allowed/);
   });
 
   it("uses confirmationLevel in getLatestBlockhash and confirmTransaction", async () => {
