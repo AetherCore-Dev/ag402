@@ -702,3 +702,19 @@ Phase  6:  Done        — Done Summary; observability signal named; rollback do
 - Small feature: 0
 - Complex feature: 0–1 (design fork with different blast radius / security profile)
 - Security-sensitive change: 0–1 (only if breaking an existing auth mechanism)
+
+## Skill Relationships
+
+This skill is self-contained but shares responsibility with the wider pipeline:
+
+| Phase | Related skill | Relationship |
+|-------|--------------|--------------|
+| Phase 2: debugging | **superpowers:systematic-debugging** | Phase 2's Structured Debugging Protocol mirrors this skill. When working in a multi-agent context, invoke `systematic-debugging` directly instead of following the inline protocol — they evolve together. |
+| Phase 3: Multi-Role Review | **superpowers:multi-role-review** | Phase 3 contains an inline review protocol. For complex features or security-sensitive changes, consider invoking `multi-role-review` instead — it runs 4 reviewers in parallel and has broader Production Readiness coverage. |
+| Phase 6: Done | **superpowers:verification-before-completion** | Before declaring Done, the verification requirement in Phase 6 aligns with this skill's "evidence before claims" principle. In any multi-agent context, invoke `verification-before-completion` explicitly rather than relying on the inline Done checklist. |
+| Phase 5: Production check | **superpowers:finishing-a-development-branch** | Phase 5 + Phase 6 correspond to Steps 1–2 of `finishing-a-development-branch`. When the feature is ready to merge, invoke that skill to handle branch integration, worktree cleanup, and PR creation. |
+
+**This skill vs. the collaborative pipeline:**
+- Use this skill for: bug fixes, small features (1–3 files), or when you want a single coherent autonomous session
+- Use `brainstorming → writing-plans → subagent-driven-development` for: cross-module features, new interfaces, design decisions that need approval, or features where fresh-context subagents matter
+- See `skills/pipeline-routing.md` for the decision tree

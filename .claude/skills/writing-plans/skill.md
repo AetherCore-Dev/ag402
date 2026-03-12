@@ -60,7 +60,17 @@ This structure informs the task decomposition. Each task should produce self-con
 ---
 ```
 
-## Task Structure
+## Task Structure Contract
+
+**This structure is a machine-readable contract between `writing-plans` and `subagent-driven-development`.**
+`subagent-driven-development` parses tasks by looking for `### Task N:` headings. Any deviation breaks task extraction.
+
+**Rules (never break these):**
+- Each task starts with exactly `### Task N: [Name]` (H3, "Task", number, colon)
+- Task numbering is sequential starting from 1: Task 1, Task 2, Task 3…
+- Do NOT use `## Chunk N:` or `#### Step N:` or any other heading as the task boundary
+- Each task ends where the next `### Task` begins
+- Use `## Chunk N:` headings ONLY for grouping tasks into review batches — not as task boundaries
 
 ````markdown
 ### Task N: [Component Name]

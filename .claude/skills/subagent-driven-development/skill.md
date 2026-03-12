@@ -35,6 +35,29 @@ digraph when_to_use {
 - Two-stage review after each task: spec compliance first, then code quality
 - Faster iteration (no human-in-loop between tasks)
 
+## Plan Format Contract
+
+Plans produced by `writing-plans` use a specific structure that this skill depends on for task extraction.
+
+**Task boundary rule:** A task starts at `### Task N:` (H3 heading) and ends where the next `### Task` begins.
+
+```
+### Task 1: Setup database schema
+   (everything here belongs to Task 1)
+
+### Task 2: Implement auth endpoint
+   (everything here belongs to Task 2)
+```
+
+**`## Chunk N:` headings** are grouping markers for plan review batches — they do NOT define task boundaries. A chunk contains multiple tasks.
+
+**Extraction failure symptoms:**
+- If the plan uses `#### Task N:` (H4) or `**Task N:**` — extraction will miss tasks
+- If the plan uses `## Chunk N:` as the task boundary — subagent receives the wrong scope
+- If task numbers are non-sequential — subagent cannot determine total task count
+
+**Before starting execution:** Scan the plan file. Count `### Task N:` headings. If the count doesn't match your expectations, ask the human to verify the plan structure before dispatching any subagent.
+
 ## The Process
 
 ```dot

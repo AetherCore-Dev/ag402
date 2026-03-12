@@ -55,31 +55,50 @@ Focus exclusively on security attack surfaces. Do NOT comment on architecture or
 **Input validation**
 - [ ] Are all user/external inputs validated before use?
 - [ ] Are numeric boundaries tested (zero, negative, overflow, sub-minimum)?
-- [ ] Are string inputs sanitised (injection, header injection, path traversal)?
+- [ ] Are string inputs sanitised (injection, header injection, path traversal `../`, null bytes)?
 - [ ] Can any input cause silent wrong-result (e.g. `Math.round(0.5) = 1`, not 0)?
+- [ ] JS/TS: `NaN`, `Infinity`, `-Infinity` are NOT caught by `x < 0` — is `!isFinite(x)` used for all numeric validation?
+- [ ] Are regex patterns anchored? (`re.fullmatch` in Python; `/^...$/.test()` in JS — partial match allows bypass)
+- [ ] JS/TS: no user-controlled keys in `Object.assign`, spread, or dynamic property access (prototype pollution)
 
 **Cryptographic / key handling**
 - [ ] Are private keys decoded with a library that throws on invalid input (not silent fallback)?
 - [ ] Are secrets never logged or included in error messages?
-- [ ] Are HMAC/signature verifications constant-time?
+- [ ] Are HMAC/signature verifications constant-time (no early return on first mismatch — timing oracle)?
+- [ ] Are new signing keys at least 32 bytes of entropy?
 
-**Financial logic**
+**Financial / transactional logic**
 - [ ] Is every "success" response from an external SDK verified (e.g. `confirmTransaction().value.err`)?
-- [ ] Can a transaction succeed externally but fail internally, causing wallet deduction with no value?
+- [ ] Can a transaction succeed externally but fail internally, causing deduction with no value delivered?
 - [ ] Is zero-value transfer possible (sends nothing but costs fees)?
 - [ ] Is self-transfer possible (src == dst)?
+- [ ] After any irreversible operation (payment broadcast, DB write, file commit): do ALL downstream paths — including catch/finally — handle partial state safely? No exception may leave the system inconsistent after money/data has moved.
+- [ ] Is the operation idempotent? Can it be safely retried if the response is lost?
 
-**Network / external dependencies**
+**Network / SSRF**
 - [ ] Are network failures handled without leaving state inconsistent?
-- [ ] Are RPC/API success responses checked for application-level errors?
+- [ ] Are RPC/API success responses checked for application-level errors (not just HTTP 200)?
+- [ ] Do outbound HTTP/socket calls block private IPs (10.x, 172.16.x, 192.168.x), localhost, metadata endpoints (169.254.x), and non-HTTPS schemes? (SSRF)
 
 **Configuration misuse**
-- [ ] Can a valid-looking config silently target the wrong environment (e.g. mainnet RPC + testnet token)?
-- [ ] Are misconfiguration errors detected at startup, not at runtime?
+- [ ] Can a valid-looking config silently target the wrong environment (e.g. mainnet RPC + testnet token, prod key + staging endpoint)?
+- [ ] Are misconfiguration errors detected at startup (constructor/init), not at first runtime use?
+- [ ] Are secrets passed via env vars or files, not CLI arguments (visible in `ps aux`)?
+
+**Concurrency**
+- [ ] No TOCTOU (check-then-act) races at trust boundaries?
+- [ ] Multi-step DB operations use transactions or atomic operations (INSERT OR IGNORE)?
+- [ ] Shared mutable state is protected (lock, queue, atomic)?
 
 **Output safety**
-- [ ] Can any output value be injected into HTTP headers, logs, or SQL?
-- [ ] Does `getAddress()` / equivalent strip control characters?
+- [ ] Can any output value flow into HTTP headers, SQL, shell commands, file paths, or log lines without escaping?
+- [ ] Does `getAddress()` / equivalent strip control characters (`\r`, `\n`, `"`, `'`)?
+
+**Supply chain**
+- [ ] All new dependencies audited (`npm audit` / `pip-audit` / `cargo audit`)?
+- [ ] No new dep with known CVEs?
+- [ ] Versions pinned or range-constrained (not `*` or `latest`)?
+- [ ] No new dep whose name is suspiciously close to a well-known package (typosquatting)?
 
 **Verdict format:**
 ```
