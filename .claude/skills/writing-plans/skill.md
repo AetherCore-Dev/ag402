@@ -105,42 +105,45 @@ git commit -m "feat: add specific feature"
 
 ## Security Guard Checklist (required for any task touching external SDK, financial logic, or public API)
 
-Before finalising each task's test cases, walk through these attack surfaces. For any that apply, write an explicit failing test:
+Before finalising each task's test cases, walk through these attack surfaces. For any that apply, write an explicit failing test. **These are stack-agnostic patterns — substitute your domain's concrete types.**
 
 **Numeric boundaries**
-- Zero value: `amount = 0` or any input that rounds to zero
-  - Show the math: `0.0000004 × 10^6 = 0.4 → Math.round(0.4) = 0` — test with `"0.0000004"` not `"0.0000005"` (which rounds to 1)
-- Negative value: `amount = -1`
-- Sub-minimum: value so small it truncates/rounds to a no-op
-- Overflow: value large enough to overflow the target integer type
+- Zero value: `amount = 0` or any input that rounds/truncates to zero
+  - Always show the full calculation: `0.0000004 × 10^6 = 0.4 → round(0.4) = 0`. Pick the test value by working backwards from the expected truncated result, not by guessing.
+- Negative value
+- Sub-minimum: smallest value that passes type checks but produces a no-op (e.g. rounds to zero, truncates to empty, clamps to a minimum)
+- Overflow: largest value that overflows the target type silently
 
 **Self-reference**
-- Source == destination (e.g. payer == recipient, src file == dst file)
+- Source == destination (file src == dst, payer == recipient, src queue == dst queue)
+- Self-referential configs (e.g. a service calling itself, a node pointing to itself in a graph)
 
-**External SDK "success" ≠ semantic success**
-- Document any SDK method where the Promise resolves but the operation failed (e.g. `confirmTransaction().value.err`)
-- Write an explicit test: mock the "resolved but failed" case and assert the caller throws
+**External API / SDK: success ≠ semantic success**
+- Any async call that resolves/returns without throwing but carries a failure in the response body
+  - Pattern: call resolves → check `response.error`, `result.value.err`, `status != "ok"`, etc.
+  - Write an explicit test: mock "resolved with embedded failure" and assert the caller throws, not returns
 
 **Configuration misuse**
-- Wrong-environment config that silently targets the wrong place (e.g. mainnet RPC + testnet token mint)
-- Missing required config that fails at runtime, not startup — guard should throw at construction
+- Wrong-environment config that silently targets the wrong resource (e.g. prod credentials pointing to staging, test token pointing to real network)
+- Missing required config that fails at runtime (not startup) — guard should throw at construction, not at first use
 
 **Output injection**
-- Any value returned to caller or placed in HTTP header: strip `\r`, `\n`, `"`, `'`
+- Any string value that flows into HTTP headers, SQL, shell commands, file paths, log lines, or user-visible output: strip or escape the relevant control characters
+- Do not assume upstream callers sanitised it — validate at the boundary
 
 **Public API consistency**
-- For every method signature in the implementation, verify the README examples and TypeScript/Python types match exactly
-- If README shows `fromEnv({ usdcMint: ... })`, the type definition MUST accept `usdcMint`
+- For every public method/function signature: verify docs, type annotations, and runtime behaviour agree
+- If the docs show an option (`fromEnv({ x: ... })`), the type must accept it and the runtime must use it
 
 **Package release artifacts**
-- LICENSE, README, CHANGELOG must be in `files` / `include`
-- Version consistent across all manifests
+- LICENSE, README, CHANGELOG present and included in published artifact
+- Version number consistent across all manifests (package.json, pyproject.toml, Cargo.toml, etc.)
 
 ## Remember
 - Exact file paths always
 - Complete code in plan (not "add validation")
 - Exact commands with expected output
-- For numeric boundary tests: show the full calculation (`x × 10^N = y → round(y) = z`)
+- For numeric boundary tests: show the full calculation (`input × scale = y → round(y) = z`), then pick the test value from that math
 - Reference relevant skills with @ syntax
 - DRY, YAGNI, TDD, frequent commits
 

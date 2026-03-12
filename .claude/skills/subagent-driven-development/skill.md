@@ -263,9 +263,12 @@ Done!
 - Repeat until approved
 - Don't skip the re-review
 
-**If subagent fails task:**
-- Dispatch fix subagent with specific instructions
-- Don't try to fix manually (context pollution)
+**If subagent fails task (BLOCKED status):**
+- Read the full escalation report from the subagent before doing anything
+- If it's a context problem: provide the missing information and re-dispatch
+- If it's a test failure or unexpected behavior: dispatch a new subagent with `superpowers:systematic-debugging` to diagnose root cause first, then fix
+- If the plan itself is wrong (not a code problem): escalate to human — do not attempt to fix the plan autonomously
+- Never retry the exact same approach with the same subagent — if it's BLOCKED, something must change
 
 ## Integration
 
