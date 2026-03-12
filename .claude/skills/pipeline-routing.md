@@ -58,13 +58,21 @@ feature (Phase -1 → 6)
 **Flow:**
 ```
 brainstorming
+    ├── clarifying questions + 2-3 approach options
+    ├── design draft → human feedback
+    ├── [if security surface / multiple modules / new interfaces]
+    │       4 parallel design reviewers (Product / Security / TechLead / DX)
+    │       iterate until ✅ → human final approval
+    │   [else: simple design → human final approval directly]
+    ├── spec-document-reviewer → iterate until ✅
     ↓ (produces: docs/superpowers/specs/YYYY-MM-DD-<name>-design.md)
 writing-plans
+    ├── per chunk: plan-document-reviewer → iterate until ✅
     ↓ (produces: docs/superpowers/plans/YYYY-MM-DD-<name>.md)
 subagent-driven-development
-    ↓ (per task: implement → spec review → quality review)
+    ↓ (per task: implement → spec-reviewer → code-quality-reviewer)
 multi-role-review
-    ↓ (parallel: security / architecture / DX / production)
+    ↓ (parallel: security / architecture / DX / production — iterate until ✅)
 finishing-a-development-branch
 ```
 
@@ -97,3 +105,9 @@ The design doc is not a plan. A plan has exact file paths, complete code snippet
 
 **Running `multi-role-review` before all tasks are complete**
 Multi-role review reviews the whole feature. Running it mid-way wastes time — findings will be invalid after remaining tasks change the code.
+
+**Skipping the human final approval after design review**
+The design review loop is AI-to-AI. Human approval (before writing spec) is a separate mandatory gate — it cannot be replaced by AI reviewer consensus.
+
+**Applying design review to simple designs**
+4 parallel reviewers for a one-file utility with no external APIs is waste. Apply the scope gate: single module + no security surface + no new public interfaces → skip design review.

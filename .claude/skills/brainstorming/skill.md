@@ -25,9 +25,13 @@ You MUST create a task for each of these items and complete them in order:
 2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
-5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+5. **Present design draft** — in sections scaled to their complexity, get initial human feedback
+6. **Multi-role design review** — if design has security surface, multiple modules, or new public interfaces: dispatch 4 parallel reviewers, iterate until ✅; otherwise skip (see Design Review Loop for scope gate)
+7. **Human final approval** — present final design, ask "Shall I write the spec?" Wait for confirmation.
+8. **Create worktree** — invoke `superpowers:using-git-worktrees` to create isolated workspace
+9. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
+10. **Spec review** — dispatch spec-document-reviewer subagent, iterate until ✅, then commit
+11. **Transition to implementation** — invoke writing-plans skill to create implementation plan
 
 ## Process Flow
 
@@ -38,9 +42,16 @@ digraph brainstorming {
     "Offer Visual Companion\n(own message, no other content)" [shape=box];
     "Ask clarifying questions" [shape=box];
     "Propose 2-3 approaches" [shape=box];
-    "Present design sections" [shape=box];
-    "User approves design?" [shape=diamond];
+    "Present design draft\n(get initial human feedback)" [shape=box];
+    "Simple design?\n(single module, no security surface,\nno new public interfaces)" [shape=diamond];
+    "Dispatch 4 design reviewers IN PARALLEL\n(design-perspective-reviewer-prompt.md)" [shape=box];
+    "Any CRITICAL or IMPORTANT?" [shape=diamond];
+    "Revise design draft\nshow changes to human" [shape=box];
+    "Human final approval\n'Shall I write the spec?'" [shape=box];
     "Write design doc" [shape=box];
+    "Dispatch spec-document-reviewer" [shape=box];
+    "Spec approved?" [shape=diamond];
+    "Fix spec issues" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
 
     "Explore project context" -> "Visual questions ahead?";
@@ -48,11 +59,20 @@ digraph brainstorming {
     "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
     "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
     "Ask clarifying questions" -> "Propose 2-3 approaches";
-    "Propose 2-3 approaches" -> "Present design sections";
-    "Present design sections" -> "User approves design?";
-    "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Invoke writing-plans skill";
+    "Propose 2-3 approaches" -> "Present design draft\n(get initial human feedback)";
+    "Present design draft\n(get initial human feedback)" -> "Simple design?\n(single module, no security surface,\nno new public interfaces)";
+    "Simple design?\n(single module, no security surface,\nno new public interfaces)" -> "Human final approval\n'Shall I write the spec?'" [label="yes"];
+    "Simple design?\n(single module, no security surface,\nno new public interfaces)" -> "Dispatch 4 design reviewers IN PARALLEL\n(design-perspective-reviewer-prompt.md)" [label="no"];
+    "Dispatch 4 design reviewers IN PARALLEL\n(design-perspective-reviewer-prompt.md)" -> "Any CRITICAL or IMPORTANT?";
+    "Any CRITICAL or IMPORTANT?" -> "Revise design draft\nshow changes to human" [label="yes"];
+    "Revise design draft\nshow changes to human" -> "Dispatch 4 design reviewers IN PARALLEL\n(design-perspective-reviewer-prompt.md)" [label="re-review"];
+    "Any CRITICAL or IMPORTANT?" -> "Human final approval\n'Shall I write the spec?'" [label="no (only MINOR)"];
+    "Human final approval\n'Shall I write the spec?'" -> "Write design doc";
+    "Write design doc" -> "Dispatch spec-document-reviewer";
+    "Dispatch spec-document-reviewer" -> "Spec approved?";
+    "Spec approved?" -> "Fix spec issues" [label="no"];
+    "Fix spec issues" -> "Dispatch spec-document-reviewer" [label="re-review"];
+    "Spec approved?" -> "Invoke writing-plans skill" [label="yes"];
 }
 ```
 
@@ -117,12 +137,38 @@ Every row in this table → one failing test in the plan. If a guard isn't in th
 
 ## After the Design
 
+**Design Review Loop (runs after presenting draft, before writing spec):**
+
+**Scope gate — skip for simple designs:**
+If all three conditions are true: single module, no security attack surface (no financial logic, no external APIs, no cryptography), and no new public interfaces — skip the multi-role review and proceed directly to writing the spec. Add a note: "Simple design — skipping multi-role review."
+
+Otherwise, for any design with security surface, multiple modules, or new public interfaces:
+
+1. Dispatch all 4 reviewers IN PARALLEL (single message, 4 Agent tool calls)
+   - Provide each: the design draft content, stated goal, project context, round number
+   - Use `design-perspective-reviewer-prompt.md` for each reviewer's role prompt
+   - Roles: Product/Requirements, Security Architect, Tech Lead/Architecture, Developer Experience
+2. Synthesize all findings (CRITICAL / IMPORTANT / MINOR)
+3. If any CRITICAL or IMPORTANT:
+   - Revise the design draft
+   - Show the changes to the human: "I've addressed X issues: [list]. Does the revised design look right?"
+   - Wait for human response before re-running
+4. If only MINOR → present final design to human: "Design review complete. Here is the final design: [summary]. Shall I write the spec?"
+5. Max 3 rounds → escalate to human if still failing
+
+**Final human approval before writing spec (required):**
+Before writing the spec document, present the final approved design and ask: "Design is ready. Shall I write the spec?" Do not proceed to spec without this confirmation.
+
+**Model selection:**
+- All 4 design reviewers: most capable model (design quality requires judgment)
+
 **Documentation:**
 
-- Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
+- After spec review passes (✅): commit the spec document to git
+- Path: `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
   - (User preferences for spec location override this default)
 - Use elements-of-style:writing-clearly-and-concisely skill if available
-- Commit the design document to git
+- **Commit only after spec review is ✅** — do not commit a spec that still has open issues
 
 **Spec Review Loop:**
 After writing the spec document:

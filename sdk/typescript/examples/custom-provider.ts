@@ -1,9 +1,12 @@
 /**
  * Custom payment provider example.
  *
- * Shows how to implement a real PaymentProvider by conforming to the
- * PaymentProvider interface. Swap the mock broadcast logic with a
- * real Solana USDC transfer using @solana/web3.js or @ag402/solana.
+ * Shows how to implement a PaymentProvider by conforming to the
+ * PaymentProvider interface. This is useful when integrating a chain or
+ * wallet not covered by an existing provider package.
+ *
+ * For real Solana USDC payments, use @ag402/solana instead of building
+ * your own — see examples/production-usage.ts for the full setup.
  *
  * Run with: npx tsx examples/custom-provider.ts
  */

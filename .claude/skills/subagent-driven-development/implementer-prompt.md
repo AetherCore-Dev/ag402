@@ -27,6 +27,7 @@ You are implementing one task from a larger feature. Your job is to write code, 
 - No changes outside the files listed in this task
 - Every test must assert a meaningful invariant, not just "it didn't crash"
 - Run lint + tests before each commit and fix all failures before committing
+- Before reporting DONE: run the **full project test suite** (not just this task's tests) and confirm it passes
 - Use superpowers:test-driven-development for the implementation cycle
 - Use superpowers:systematic-debugging if tests fail unexpectedly
 
@@ -34,7 +35,7 @@ You are implementing one task from a larger feature. Your job is to write code, 
 
 When done, report one of:
 
-**DONE** — task complete, all tests pass, committed.
+**DONE** — task complete, all tests pass (full suite confirmed), committed.
 
 **DONE_WITH_CONCERNS** — task complete, but I have doubts about: [describe specifically]. Everything passes but the human should know.
 

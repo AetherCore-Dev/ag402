@@ -159,7 +159,9 @@ const apiFetch = createX402Fetch({ wallet: myWallet });
 
 ### Concurrency Warning
 
-`createX402Fetch` is **not safe for concurrent calls** on the same instance. Two simultaneous calls (e.g. `Promise.all`) may both pass the budget check before either deducts, causing over-spend:
+> ⚠️ **`createX402Fetch` is NOT safe for concurrent calls on the same instance.**
+
+Two simultaneous calls (e.g. `Promise.all`) may both pass the budget check before either deducts, causing over-spend:
 
 ```typescript
 // UNSAFE — may over-spend:
@@ -196,7 +198,20 @@ const myProvider: PaymentProvider = {
 const apiFetch = createX402Fetch({ wallet, provider: myProvider });
 ```
 
-> `@ag402/solana` — real Solana payment provider — is coming soon.
+> **Use `@ag402/solana` for real on-chain payments:**
+>
+> ```bash
+> npm install @ag402/fetch @ag402/solana
+> ```
+> ```typescript
+> import { SolanaPaymentProvider, fromEnv } from "@ag402/solana";
+>
+> // Reads SOLANA_PRIVATE_KEY from environment
+> const provider = fromEnv();
+> const apiFetch = createX402Fetch({ wallet, provider });
+> ```
+>
+> See the [`@ag402/solana` README](https://www.npmjs.com/package/@ag402/solana) for full setup, mainnet config, and confirmationLevel options.
 
 ---
 
@@ -231,6 +246,8 @@ import {
 | [`examples/custom-provider.ts`](./examples/custom-provider.ts) | Implement a real `PaymentProvider` for on-chain payments |
 | [`examples/server-side-challenge.ts`](./examples/server-side-challenge.ts) | Emit a 402 challenge from a Node.js HTTP server (seller side) |
 
+For a real Solana on-chain example, see the [`@ag402/solana` README](https://www.npmjs.com/package/@ag402/solana).
+
 Run any example with:
 ```bash
 npx tsx examples/basic-usage.ts
@@ -251,14 +268,12 @@ npx tsx examples/basic-usage.ts
 
 ## Limitations
 
-- **No real Solana payment** — `MockPaymentProvider` only (production provider coming in `@ag402/solana`)
 - **No wallet persistence** — `InMemoryWallet` resets on restart; implement `Wallet` for persistence
 - **No concurrent call safety** — do not use `Promise.all` on the same instance; see [Concurrency Warning](#concurrency-warning)
 - **No TypeScript gateway/seller side** — buyer only in this package
 
 ## Deferred / Roadmap
 
-- `@ag402/solana` — real Solana USDC payment provider
 - SQLite-backed persistent wallet (`SqliteWallet`)
 - TypeScript gateway/seller side
 

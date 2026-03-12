@@ -140,6 +140,25 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 
 **Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
 
+## Controller Context Management
+
+For large plans (10+ tasks), the controller session accumulates review history and can approach context limits. Prevent this proactively:
+
+**At plan start:** Extract ALL task texts upfront (before dispatching any subagent). Store them as a local variable/note. Never re-read the plan file mid-execution.
+
+**After every 5 tasks:** If context feels heavy, start a fresh controller session:
+1. Note current task number and any open concerns from prior tasks
+2. Summarize completed tasks as: "Tasks 1–N complete. Branch: `<name>`. Tests: <N> passing. Open concerns: <list or none>."
+3. Start new session with this summary + remaining task list
+4. Continue from task N+1
+
+**Signs the controller needs a fresh session:**
+- Responses getting slower
+- Earlier task context being confused with current task
+- Tool call results referencing wrong file names
+
+This is not a failure — it is normal for plans with 10+ tasks. Build it into the plan upfront if the task count is known.
+
 ## Prompt Templates
 
 - `./implementer-prompt.md` - Dispatch implementer subagent

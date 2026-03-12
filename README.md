@@ -101,9 +101,11 @@ No config files. No API keys. No accounts. Minimal code changes.
 **Python (zero code changes):**
 ```bash
 pip install ag402-core
-ag402 init       # Creates wallet + $100 test USDC — zero prompts
+ag402 setup      # Interactive wizard: creates wallet, selects network, configures keys
 ag402 demo       # Watch the full payment flow end-to-end
 ```
+
+> For non-interactive / CI use, run `ag402 init` instead — zero prompts, auto-creates wallet with $100 test USDC.
 
 **TypeScript/Node.js:**
 ```bash
@@ -181,6 +183,82 @@ import ag402_core; ag402_core.enable()
 That's it. Every HTTP 402 response is now intercepted → paid → retried automatically. Your agent code stays **completely untouched**.
 
 Works with **LangChain**, **AutoGen**, **CrewAI**, **Semantic Kernel**, and any framework built on `httpx` or `requests`.
+
+#### Framework Examples
+
+<details>
+<summary><b>LangChain</b> — tool functions call x402 APIs, no payment code needed</summary>
+
+```python
+import ag402_core
+ag402_core.enable()  # one line — before any tool calls
+
+from langchain.tools import tool
+import httpx
+
+@tool
+def get_weather(city: str) -> str:
+    """Get weather from a paid API. ag402 handles the 402 automatically."""
+    resp = httpx.get("https://weather-api.example.com/data", params={"city": city})
+    resp.raise_for_status()
+    return resp.json()["summary"]
+
+# Build your agent normally — no payment logic anywhere
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_openai import ChatOpenAI
+# ... standard LangChain setup
+```
+
+Full example: [`examples/langchain_integration.py`](examples/langchain_integration.py) — start [`examples/start_local_demo.py`](examples/start_local_demo.py) first for a self-contained local demo.
+
+</details>
+
+<details>
+<summary><b>AutoGen</b> — register tools on UserProxyAgent, ag402 patches the HTTP layer</summary>
+
+```python
+import ag402_core
+ag402_core.enable()
+
+from autogen import AssistantAgent, UserProxyAgent
+import httpx
+
+assistant = AssistantAgent("assistant", llm_config={...})
+user_proxy = UserProxyAgent("user", human_input_mode="NEVER", ...)
+
+@user_proxy.register_for_execution()
+@assistant.register_for_llm(description="Get weather data.")
+def get_weather(city: str) -> str:
+    resp = httpx.get("https://weather-api.example.com/data", params={"city": city})
+    return resp.json()["summary"]  # 402 was auto-paid before this line
+```
+
+Full example: [`examples/autogen_integration.py`](examples/autogen_integration.py) — start [`examples/start_local_demo.py`](examples/start_local_demo.py) first.
+
+</details>
+
+<details>
+<summary><b>CrewAI</b> — decorate tools with @tool, crew runs with no payment code</summary>
+
+```python
+import ag402_core
+ag402_core.enable()
+
+from crewai.tools import tool
+import httpx
+
+@tool("Weather Data Tool")
+def get_weather(city: str) -> str:
+    """Fetch weather from a paid API."""
+    resp = httpx.get("https://weather-api.example.com/data", params={"city": city})
+    return f"{resp.json()['city']}: {resp.json()['temp']}°C"
+
+# Build Agents, Tasks, Crew normally — ag402 is invisible
+```
+
+Full example: [`examples/crewai_integration.py`](examples/crewai_integration.py) — start [`examples/start_local_demo.py`](examples/start_local_demo.py) first.
+
+</details>
 
 ### For Claude Code / Cursor / OpenClaw — One Command
 
@@ -481,6 +559,55 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 | **[SECURITY](SECURITY.md)** | Security policy & audit history |
 | **[CHANGELOG](CHANGELOG.md)** | Version history |
 | **[CONTRIBUTING](CONTRIBUTING.md)** | Contribution guide |
+
+---
+
+## Troubleshooting
+
+### ag402 doctor
+
+Run `ag402 doctor` first. It validates your environment end-to-end and prints a PASS/FAIL report with actionable fix suggestions for each issue:
+
+- Python version and required package installation
+- Solana cryptography dependencies (`solana`, `solders`, `spl-token`)
+- RPC connectivity (pings your configured endpoint and any backups)
+- Wallet file presence and integrity (detects corruption or missing keys)
+- Budget configuration sanity (flags limits set to $0 or above the $1,000 ceiling)
+
+```bash
+ag402 doctor          # full health check
+```
+
+If `ag402 doctor` passes but you still see errors, enable verbose mode: `AG402_DEBUG=1 ag402 run -- python my_agent.py`
+
+### Configuration priority
+
+Ag402 resolves configuration in this order (highest priority wins):
+
+1. **Environment variables** — e.g. `X402_DAILY_LIMIT=50`, `AG402_RPC_URL=https://...`
+2. **`.env` file** — loaded from the current working directory at process start
+3. **Code defaults** — the values baked into `ag402-core` itself (e.g. $10 daily limit)
+
+Environment variables always override `.env` values. `.env` values always override code defaults. To verify what values are active, run `ag402 status` (shows resolved limits and config source) or `ag402 doctor`.
+
+### Common errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `ag402: command not found` | PATH not updated after `pip install` | Run `python -m ag402_core.cli` or restart your shell |
+| `Wallet file not found` | Setup not completed | Run `ag402 setup` (interactive) or `ag402 init` (non-interactive) |
+| `Insufficient wallet balance` | Test wallet is empty | Run `ag402 init` — auto-deposits $100 test USDC |
+| `Cannot connect to Solana network` | RPC unreachable | Use `ag402 demo` (mock, no network needed) or `ag402 demo --localnet` |
+| `Solana RPC timed out` | Devnet congestion | Retry, or switch to `ag402 demo --localnet` for stable local testing |
+| `Incorrect wallet password` | Mistyped password | Set `AG402_UNLOCK_PASSWORD=yourpass` to skip the prompt |
+| `Daily spending limit reached` | Over `X402_DAILY_LIMIT` | Run `ag402 config` to view limits; set `X402_DAILY_LIMIT=100` to increase |
+| `Missing dependency: solana` | Solana deps not installed | Run `pip install 'ag402-core[crypto]'` for on-chain payments |
+
+### Still stuck?
+
+- `ag402 doctor` — full environment health check with actionable suggestions
+- [GitHub Issues](https://github.com/AetherCore-Dev/ag402/issues) — search existing issues or file a new one
+- Set `AG402_DEBUG=1` for verbose output including full stack traces
 
 ---
 

@@ -905,6 +905,23 @@ def _cmd_upgrade() -> None:
 
 # ─── Original Commands ───────────────────────────────────────────────────
 
+
+async def _probe_rpc(rpc_url: str, timeout: float = 5.0) -> bool:
+    """Return True if the RPC endpoint responds to a basic health probe."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                rpc_url,
+                json={"jsonrpc": "2.0", "id": 1, "method": "getHealth"},
+                headers={"Content-Type": "application/json"},
+            )
+            return resp.status_code < 500
+    except Exception:
+        return False
+
+
 async def _cmd_init(db_path: str) -> None:
     from ag402_core.config import load_config
     from ag402_core.wallet.agent_wallet import AgentWallet
@@ -943,6 +960,20 @@ async def _cmd_init(db_path: str) -> None:
     print(f"  │  Security:      {_green('6 layers active ✓'):>37s}│")
     print("  └─────────────────────────────────────────────┘")
     print()
+
+    # Connectivity probe (production only — test mode uses mock, no RPC needed)
+    if not is_test:
+        print("  [INIT] Checking RPC connectivity ... ", end="", flush=True)
+        rpc_ok = await _probe_rpc(config.effective_rpc_url)
+        if rpc_ok:
+            print(_green("✓"))
+        else:
+            print(_yellow("⚠ unreachable"))
+            print(f"  {_yellow('⚠')} Cannot reach {config.effective_rpc_url}")
+            print("  → Payments will fail until the RPC is reachable.")
+            print("  → Check your network, or run `ag402 doctor` for diagnosis.")
+            print()
+
     print(f"  Next: Run {_cyan('ag402 demo')} to see an AI agent auto-pay for an API call!")
     print(f"        Run {_cyan('ag402 status')} to view the full dashboard.")
     print()

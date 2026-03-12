@@ -710,7 +710,7 @@ This skill is self-contained but shares responsibility with the wider pipeline:
 | Phase | Related skill | Relationship |
 |-------|--------------|--------------|
 | Phase 2: debugging | **superpowers:systematic-debugging** | Phase 2's Structured Debugging Protocol mirrors this skill. When working in a multi-agent context, invoke `systematic-debugging` directly instead of following the inline protocol — they evolve together. |
-| Phase 3: Multi-Role Review | **superpowers:multi-role-review** | Phase 3 contains an inline review protocol. For complex features or security-sensitive changes, consider invoking `multi-role-review` instead — it runs 4 reviewers in parallel and has broader Production Readiness coverage. |
+| Phase 3: Multi-Role Review | **superpowers:multi-role-review** | Phase 3 contains an inline review protocol. For complex features or security-sensitive changes, **REQUIRED:** invoke `multi-role-review` instead — it runs 4 reviewers in parallel and has broader Production Readiness coverage. Use the inline protocol only for bug fixes and trivial small features. |
 | Phase 6: Done | **superpowers:verification-before-completion** | Before declaring Done, the verification requirement in Phase 6 aligns with this skill's "evidence before claims" principle. In any multi-agent context, invoke `verification-before-completion` explicitly rather than relying on the inline Done checklist. |
 | Phase 5: Production check | **superpowers:finishing-a-development-branch** | Phase 5 + Phase 6 correspond to Steps 1–2 of `finishing-a-development-branch`. When the feature is ready to merge, invoke that skill to handle branch integration, worktree cleanup, and PR creation. |
 
