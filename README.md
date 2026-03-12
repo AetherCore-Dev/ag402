@@ -217,7 +217,7 @@ const res = await apiFetch("https://paid-api.example.com/data");
 // 402 Payment Required → auto-pays → retries → 200 OK
 ```
 
-Swap `InMemoryWallet` with your own `Wallet` implementation and `MockPaymentProvider` with `@ag402/solana` (coming soon — see Roadmap) for real on-chain payments. Zero runtime dependencies — Node.js 18+, Bun, Deno.
+Swap `InMemoryWallet` with your own `Wallet` implementation and `MockPaymentProvider` with [`@ag402/solana`](https://www.npmjs.com/package/@ag402/solana) for real on-chain USDC payments. Zero runtime dependencies — Node.js 18+, Bun, Deno.
 
 ### For API Sellers — Zero Code Changes
 
@@ -501,7 +501,7 @@ Compatible with the [Coinbase x402](https://github.com/coinbase/x402) open payme
 | ✅ Claude Code / Cursor / OpenClaw | **Shipped** | One-command install, native MCP support |
 | ✅ 4 internal security reviews | **Shipped** | 24/24 issues fixed, 748+ tests |
 | ✅ **TypeScript SDK** | **Shipped** | [`@ag402/fetch`](https://www.npmjs.com/package/@ag402/fetch) — zero-dep Node.js/Bun/Deno buyer SDK. 100 tests, dual ESM+CJS, full protocol utilities |
-| 🔜 `@ag402/solana` | Planned | Real Solana USDC payment provider for TypeScript |
+| ✅ **`@ag402/solana`** | **Shipped** | [`@ag402/solana`](https://www.npmjs.com/package/@ag402/solana) — real Solana USDC `PaymentProvider` for TypeScript. 17 tests, dual ESM+CJS, mainnet/devnet guards |
 | 🔜 Multi-chain | Planned | Base, Polygon, Arbitrum USDC support |
 | 🔜 Stripe fallback | Planned | Fiat payment fallback for non-crypto users |
 | 🔜 Dashboard | Planned | Web UI for sellers — revenue, analytics, API keys |
