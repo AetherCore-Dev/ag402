@@ -74,7 +74,7 @@ const provider = fromEnv({
 });
 ```
 
-> **fromEnv() does not read `SOLANA_RPC_URL` or `SOLANA_USDC_MINT` automatically** — pass them explicitly as shown above.
+> **`fromEnv()` does not read `SOLANA_RPC_URL` or `SOLANA_USDC_MINT` from the environment automatically** — pass them explicitly in the options as shown above if you need to configure the network or mint.
 
 > **Mainnet + devnet mint mismatch guard:** if `rpcUrl` contains `"mainnet"` and `usdcMint` is the devnet default, the constructor throws immediately with a clear error message.
 
@@ -88,6 +88,17 @@ const provider = fromEnv({
 | `confirmationLevel` | `"confirmed"` | `"confirmed"` (~12–16s) or `"finalized"` (~48s, no rollback risk) |
 
 **Mainnet USDC mint:** `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+
+Also exported as a named constant:
+
+```typescript
+import { MAINNET_USDC_MINT } from "@ag402/solana";
+const provider = new SolanaPaymentProvider({
+  privateKey: "...",
+  rpcUrl: "https://api.mainnet-beta.solana.com",
+  usdcMint: MAINNET_USDC_MINT,
+});
+```
 
 For payments above $100, consider `confirmationLevel: "finalized"` to eliminate the small fork-rollback risk.
 
