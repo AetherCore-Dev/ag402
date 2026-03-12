@@ -70,10 +70,13 @@ export SOLANA_USDC_MINT="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 const provider = fromEnv({
   rpcUrl: process.env.SOLANA_RPC_URL,
   usdcMint: process.env.SOLANA_USDC_MINT,
+  confirmationLevel: "confirmed",  // optional
 });
 ```
 
 > **fromEnv() does not read `SOLANA_RPC_URL` or `SOLANA_USDC_MINT` automatically** — pass them explicitly as shown above.
+
+> **Mainnet + devnet mint mismatch guard:** if `rpcUrl` contains `"mainnet"` and `usdcMint` is the devnet default, the constructor throws immediately with a clear error message.
 
 ## Configuration
 

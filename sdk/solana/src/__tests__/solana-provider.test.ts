@@ -92,11 +92,22 @@ describe("SolanaPaymentProvider — constructor", () => {
     new SolanaPaymentProvider({
       privateKey: VALID_KEY,
       rpcUrl: "https://api.mainnet-beta.solana.com",
+      usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  // mainnet USDC required with mainnet RPC
     });
     expect(Connection).toHaveBeenCalledWith(
       "https://api.mainnet-beta.solana.com",
       expect.anything()
     );
+  });
+
+  it("throws when mainnet RPC is used with devnet USDC mint (misconfiguration guard)", () => {
+    expect(() =>
+      new SolanaPaymentProvider({
+        privateKey: VALID_KEY,
+        rpcUrl: "https://api.mainnet-beta.solana.com",
+        // usdcMint not set → defaults to devnet mint → should throw
+      })
+    ).toThrow(/mainnet RPC with devnet USDC mint/);
   });
 
   it("throws when given an invalid base58 private key", async () => {
@@ -283,6 +294,40 @@ describe("SolanaPaymentProvider — pay() error handling", () => {
       provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
     ).rejects.toThrow(/confirmed but failed on-chain/);
   });
+
+  it("throws when recipient ATA creation fails (does not proceed to payer ATA)", async () => {
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    // First call (recipient ATA) rejects; second call (payer ATA) should never be made
+    vi.mocked(getOrCreateAssociatedTokenAccount)
+      .mockRejectedValueOnce(new Error("Insufficient SOL for rent"));
+
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY });
+    await expect(
+      provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID)
+    ).rejects.toThrow("Insufficient SOL for rent");
+    // Only one ATA creation was attempted
+    expect(getOrCreateAssociatedTokenAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses confirmationLevel in getLatestBlockhash and confirmTransaction", async () => {
+    const { Connection } = await import("@solana/web3.js");
+    const mockGetLatestBlockhash = vi.fn().mockResolvedValue({ blockhash: "FakeHash", lastValidBlockHeight: 1 });
+    const mockConfirmTransaction = vi.fn().mockResolvedValue({ value: { err: null } });
+    vi.mocked(Connection).mockImplementationOnce(() => ({
+      getLatestBlockhash: mockGetLatestBlockhash,
+      sendTransaction: vi.fn().mockResolvedValue("5xFakeSig"),
+      confirmTransaction: mockConfirmTransaction,
+    }));
+
+    const provider = new SolanaPaymentProvider({ privateKey: VALID_KEY, confirmationLevel: "finalized" });
+    await provider.pay({ chain: "solana", token: "USDC", amount: "0.05", address: "Addr" }, REQUEST_ID);
+
+    expect(mockGetLatestBlockhash).toHaveBeenCalledWith("finalized");
+    expect(mockConfirmTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ blockhash: "FakeHash" }),
+      "finalized"
+    );
+  });
 });
 
 // ─── Test: fromEnv() ─────────────────────────────────────────────────────────
@@ -303,10 +348,13 @@ describe("fromEnv()", () => {
     expect(() => fromEnv()).toThrow(/SOLANA_PRIVATE_KEY/);
   });
 
-  it("passes custom rpcUrl to the underlying provider", async () => {
+  it("passes custom rpcUrl and usdcMint to the underlying provider", async () => {
     const { Connection } = await import("@solana/web3.js");
     process.env.SOLANA_PRIVATE_KEY = VALID_KEY;
-    fromEnv({ rpcUrl: "https://api.mainnet-beta.solana.com" });
+    fromEnv({
+      rpcUrl: "https://api.mainnet-beta.solana.com",
+      usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    });
     expect(Connection).toHaveBeenCalledWith(
       "https://api.mainnet-beta.solana.com",
       expect.anything()

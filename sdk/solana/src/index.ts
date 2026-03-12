@@ -28,7 +28,9 @@ import type { PaymentProvider, X402PaymentChallenge } from "@ag402/fetch";
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEVNET_RPC = "https://api.devnet.solana.com";
+const MAINNET_RPC_PATTERN = /mainnet/i;
 const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /** USDC has 6 decimal places */
 const USDC_DECIMALS = 6;
 
@@ -61,6 +63,16 @@ export class SolanaPaymentProvider implements PaymentProvider {
     const rpcUrl = options.rpcUrl ?? DEVNET_RPC;
     const mintAddress = options.usdcMint ?? DEVNET_USDC_MINT;
     this.confirmationLevel = options.confirmationLevel ?? "confirmed";
+
+    // Guard: mainnet RPC + devnet mint is almost certainly a misconfiguration.
+    // Catches the common "forgot to set usdcMint after changing rpcUrl" mistake.
+    if (MAINNET_RPC_PATTERN.test(rpcUrl) && mintAddress === DEVNET_USDC_MINT) {
+      throw new Error(
+        "Detected mainnet RPC with devnet USDC mint. " +
+          "Set usdcMint to the mainnet USDC mint: " +
+          `"${MAINNET_USDC_MINT}"`
+      );
+    }
 
     // bs58.decode() throws for invalid input — do NOT use Buffer.from(..., "base58")
     // which silently falls back to UTF-8 and produces garbage bytes.
@@ -193,7 +205,7 @@ export class SolanaPaymentProvider implements PaymentProvider {
  *
  * @throws {Error} if SOLANA_PRIVATE_KEY is not set
  */
-export function fromEnv(options?: { rpcUrl?: string; confirmationLevel?: "confirmed" | "finalized" }): SolanaPaymentProvider {
+export function fromEnv(options?: { rpcUrl?: string; usdcMint?: string; confirmationLevel?: "confirmed" | "finalized" }): SolanaPaymentProvider {
   const privateKey = process.env.SOLANA_PRIVATE_KEY;
   if (!privateKey) {
     throw new Error(
