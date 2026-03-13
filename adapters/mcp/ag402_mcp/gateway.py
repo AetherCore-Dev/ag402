@@ -64,14 +64,45 @@ class X402Gateway:
         prepaid_signing_key: str = "",
     ):
         self.target_url = target_url.rstrip("/")
+        # H-2 FIX: Validate target_url to prevent SSRF to internal/cloud-metadata endpoints
+        from urllib.parse import urlparse as _urlparse
+        _parsed = _urlparse(self.target_url)
+        if _parsed.hostname:
+            from ag402_core.security.challenge_validator import _is_private_address
+            _is_local = _parsed.hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+            if _is_private_address(_parsed.hostname) and not _is_local:
+                logger.warning(
+                    "[GATEWAY] target_url %s resolves to a private/reserved IP — "
+                    "potential SSRF risk. Only use trusted internal addresses.",
+                    self.target_url,
+                )
         self.price = price
         self.chain = chain
         self.token = token
+
+        # S-C2 FIX: Require explicit X402_MODE to prevent accidental test deployment.
+        # If X402_MODE is not set at all, refuse to start — operator must choose.
+        # Must be computed BEFORE address validation (which depends on _is_test_mode).
+        raw_mode = os.getenv("X402_MODE", "")
+        if not raw_mode and verifier is None:
+            raise ValueError(
+                "X402_MODE environment variable is required. "
+                "Set X402_MODE=test for development or X402_MODE=production for real use. "
+                "Refusing to start with an implicit default to prevent accidental "
+                "deployment without on-chain payment verification."
+            )
+        self._is_test_mode = (raw_mode or "test").lower() == "test"
+
+        # M-5 FIX: In production mode, address must be explicitly set — placeholder
+        # would cause buyers to pay to a non-existent address (money loss).
+        if not address and not self._is_test_mode:
+            raise ValueError(
+                "Gateway 'address' is required in production mode. "
+                "Set your Solana wallet address to receive payments."
+            )
         self.address = address or "GtwRecipientAddr1111111111111111111111111111"
         self._replay_guard = ReplayGuard(window_seconds=replay_window)
 
-        # P0-1.2: Detect test mode from environment; warn prominently
-        self._is_test_mode = os.getenv("X402_MODE", "test").lower() == "test"
         if verifier is not None:
             self.verifier = verifier
         elif self._is_test_mode:
@@ -120,8 +151,14 @@ class X402Gateway:
         # Falls back to AG402_PREPAID_SIGNING_KEY env var if not passed explicitly.
         _signing_key = prepaid_signing_key or os.getenv("AG402_PREPAID_SIGNING_KEY", "")
         if _signing_key and self.address:
-            # Warn on weak keys (minimum 32 chars recommended for HMAC-SHA256)
+            # S-C3 FIX: Enforce minimum signing key length in production mode.
             if len(_signing_key) < 32:
+                if not self._is_test_mode:
+                    raise ValueError(
+                        f"Prepaid signing key is too short ({len(_signing_key)} chars). "
+                        f"Production mode requires >= 32 characters for HMAC-SHA256 security. "
+                        f"Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+                    )
                 logger.warning(
                     "[GATEWAY] Prepaid signing key is short (%d chars). "
                     "Recommend >= 32 random characters. "
@@ -177,15 +214,27 @@ class X402Gateway:
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            """Manage shared resources: httpx client and persistent replay guard."""
+            """Manage shared resources: httpx client and persistent replay guard.
+
+            P-C2 FIX: Ensures all DB connections and HTTP clients are cleanly
+            closed on shutdown. Uvicorn handles SIGTERM/SIGINT natively and
+            triggers this lifespan exit for graceful shutdown.
+            """
             gateway._http_client = httpx.AsyncClient(timeout=30.0)
             await gateway._persistent_guard.init_db()
             await gateway._init_prepaid_db()
+
             yield
+
+            # Cleanup: close all connections cleanly on shutdown
+            logger.info("[GATEWAY] Shutting down — closing connections")
             await gateway._http_client.aclose()
             gateway._http_client = None
-            await gateway._persistent_guard.close()
+            # Null prepaid reference BEFORE closing guard's connection, so
+            # in-flight requests hit the `is None` check cleanly (503).
             await gateway._close_prepaid_db()
+            await gateway._persistent_guard.close()
+            logger.info("[GATEWAY] Shutdown complete")
 
         app = FastAPI(
             title="x402 Payment Gateway",
@@ -434,6 +483,12 @@ class X402Gateway:
                         status_code=200,
                         content={"credential": cred.to_dict(), "recovered": True},
                     )
+                # H-3 FIX: If is_new=False but no existing record found, the DB
+                # is unavailable (not a race). Refuse to issue without recording.
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Service Unavailable", "detail": "Cannot record credential issuance"},
+                )
 
             cred = PrepaidCredential(
                 buyer_address=body.buyer_address,
@@ -473,9 +528,37 @@ class X402Gateway:
 
             # 0.5. P0-2: Prepaid credential fast-path (1ms local verify, no chain call)
             prepaid_header = request.headers.get("x-prepaid-credential", "")
+            # M-5 FIX: Reject oversized prepaid credential headers (DoS prevention)
+            if prepaid_header and len(prepaid_header) > 4096:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Bad Request", "detail": "X-Prepaid-Credential header too large"},
+                )
             if prepaid_header and self._prepaid_verifier is not None:
                 result = self._prepaid_verifier.verify(prepaid_header)
                 if result.valid:
+                    # S-C1 FIX: Server-side call counting — don't trust client remaining_calls
+                    try:
+                        from ag402_core.prepaid.models import (  # noqa: N814
+                            PACKAGES as _PKGS,
+                        )
+                        from ag402_core.prepaid.models import (
+                            PrepaidCredential,
+                        )
+                        cred = PrepaidCredential.from_header_value(prepaid_header)
+                        pkg_info = _PKGS.get(cred.package_id)
+                        max_calls = pkg_info["calls"] if pkg_info else cred.remaining_calls
+                        allowed = await self._check_and_deduct_prepaid_usage(
+                            cred.buyer_address, cred.package_id, cred.signature, max_calls
+                        )
+                        if not allowed:
+                            logger.info("[GATEWAY] Prepaid quota exhausted (server-side) for buyer %s", cred.buyer_address[:24])
+                            self._metrics["prepaid_rejected"] += 1
+                            self._metrics["challenges_issued"] += 1
+                            return self._build_402_response()
+                    except Exception as exc:
+                        logger.error("[GATEWAY] Server-side prepaid check failed: %s — rejecting (fail-closed)", exc)
+                        return JSONResponse(status_code=503, content={"error": "Service Unavailable", "detail": "Prepaid quota check unavailable"})
                     self._metrics["prepaid_verified"] += 1
                     logger.info("[GATEWAY] Prepaid credential accepted — proxying")
                     try:
@@ -614,10 +697,16 @@ class X402Gateway:
         return app
 
     async def _init_prepaid_db(self) -> None:
-        """Open the prepaid issuance ledger (same DB file as replay guard)."""
-        self._prepaid_db = await aiosqlite.connect(self._replay_db_path, timeout=10.0)
-        await self._prepaid_db.execute("PRAGMA journal_mode=WAL")
-        await self._prepaid_db.execute("PRAGMA busy_timeout=5000")
+        """Create prepaid tables on the replay guard's shared DB connection.
+
+        H-2 FIX: Reuses the PersistentReplayGuard's connection instead of
+        opening a second connection to the same file. Two independent
+        connections can cause SQLITE_BUSY or deadlocks under concurrent writes.
+        """
+        self._prepaid_db = self._persistent_guard.db
+        if self._prepaid_db is None:
+            logger.error("[GATEWAY] Replay guard DB not initialized — cannot create prepaid tables")
+            return
         await self._prepaid_db.execute(
             """
             CREATE TABLE IF NOT EXISTS prepaid_issued (
@@ -628,6 +717,26 @@ class X402Gateway:
             )
             """
         )
+        # S-C1 FIX: Server-side prepaid usage counter.
+        # Tracks how many calls each credential has consumed. The buyer's
+        # remaining_calls is untrusted — only this server-side counter is
+        # authoritative. Key = buyer_address + package_id + signature (unique per credential).
+        await self._prepaid_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prepaid_usage (
+                credential_key TEXT PRIMARY KEY,
+                calls_used     INTEGER NOT NULL DEFAULT 0,
+                max_calls      INTEGER NOT NULL,
+                created_at     REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
+        # M-3 FIX: Migrate existing rows that lack created_at (upgrade path)
+        import contextlib as _cl
+        with _cl.suppress(Exception):
+            await self._prepaid_db.execute(
+                "ALTER TABLE prepaid_usage ADD COLUMN created_at REAL NOT NULL DEFAULT 0"
+            )
         await self._prepaid_db.commit()
         # Purge issuance records older than 366 days on each startup.
         # The longest package is 730 days, but idempotency only needs to cover the
@@ -636,14 +745,23 @@ class X402Gateway:
         cursor = await self._prepaid_db.execute(
             "DELETE FROM prepaid_issued WHERE issued_at < ?", (cutoff,)
         )
+        # M-3 FIX: Also prune exhausted usage records older than 366 days.
+        # created_at=0 means pre-migration rows — treat as epoch (always pruned).
+        cursor2 = await self._prepaid_db.execute(
+            "DELETE FROM prepaid_usage WHERE created_at < ?", (cutoff,)
+        )
         await self._prepaid_db.commit()
-        if cursor.rowcount:
-            logger.info("[GATEWAY] Purged %d stale prepaid_issued records", cursor.rowcount)
+        pruned_issued = cursor.rowcount or 0
+        pruned_usage = cursor2.rowcount or 0
+        if pruned_issued:
+            logger.info("[GATEWAY] Purged %d stale prepaid_issued records", pruned_issued)
+        if pruned_usage:
+            logger.info("[GATEWAY] Purged %d stale prepaid_usage records", pruned_usage)
 
     async def _close_prepaid_db(self) -> None:
-        if self._prepaid_db is not None:
-            await self._prepaid_db.close()
-            self._prepaid_db = None
+        # H-2 FIX: Connection is shared with PersistentReplayGuard — it owns
+        # the close. Just clear our reference.
+        self._prepaid_db = None
 
     async def _record_prepaid_issued(
         self,
@@ -660,7 +778,8 @@ class X402Gateway:
         the winning row and replays that credential instead.
         """
         if self._prepaid_db is None:
-            return True  # No DB — treat as new (fallback to on-chain flow)
+            logger.error("[GATEWAY] Prepaid DB unavailable — cannot record issuance for tx %s", tx_hash[:32])
+            return False  # H-3 FIX: Fail-closed — refuse to issue without recording
         cursor = await self._prepaid_db.execute(
             "INSERT OR IGNORE INTO prepaid_issued (tx_hash, buyer_address, package_id, issued_at) VALUES (?, ?, ?, ?)",
             (tx_hash, buyer_address, package_id, issued_at),
@@ -681,14 +800,62 @@ class X402Gateway:
             row = await cursor.fetchone()
         return row  # None if not found
 
+    async def _check_and_deduct_prepaid_usage(
+        self, buyer_address: str, package_id: str, signature: str, max_calls: int
+    ) -> bool:
+        """S-C1 FIX: Server-side prepaid call counter.
+
+        Atomically checks and increments usage for a credential.
+        Returns True if the call is allowed, False if the quota is exhausted.
+        The credential_key is a hash of (buyer_address, package_id, signature)
+        to uniquely identify each issued credential.
+        """
+        if self._prepaid_db is None:
+            return False  # H-3 FIX: Fail-closed — no DB means no quota check
+        import hashlib
+        credential_key = hashlib.sha256(
+            f"{buyer_address}|{package_id}|{signature}".encode()
+        ).hexdigest()
+
+        # Upsert: INSERT on first use, then check + increment atomically
+        await self._prepaid_db.execute(
+            "INSERT OR IGNORE INTO prepaid_usage (credential_key, calls_used, max_calls, created_at) VALUES (?, 0, ?, ?)",
+            (credential_key, max_calls, time.time()),
+        )
+        cursor = await self._prepaid_db.execute(
+            "UPDATE prepaid_usage SET calls_used = calls_used + 1 "
+            "WHERE credential_key = ? AND calls_used < max_calls",
+            (credential_key,),
+        )
+        await self._prepaid_db.commit()
+        return cursor.rowcount == 1
+
     async def _proxy_request(self, request: Request, path: str) -> Response:
         """Forward the request to the upstream target service."""
         target = f"{self.target_url}/{path}"
         if request.url.query:
             target = f"{target}?{request.url.query}"
 
+        # M-body FIX: Limit request body size to prevent memory exhaustion DoS
+        _MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
+        content_length = request.headers.get("content-length")
+        try:
+            content_length_int = int(content_length) if content_length else 0
+        except (ValueError, TypeError):
+            content_length_int = 0  # M-1 FIX: Malformed header → skip pre-check, rely on body read
+        if content_length_int > _MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Payload Too Large", "detail": f"Body exceeds {_MAX_BODY_SIZE} bytes"},
+            )
+
         # Read request body
         body = await request.body()
+        if len(body) > _MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Payload Too Large", "detail": f"Body exceeds {_MAX_BODY_SIZE} bytes"},
+            )
 
         # P2-3.4: Whitelist-based header forwarding — only pass known-safe headers
         # to prevent X-Forwarded-For spoofing, Cookie leakage, Connection abuse, etc.
@@ -793,6 +960,9 @@ def cli_main() -> None:
     # S1-2 FIX: Mode-aware host selection, consistent with `ag402 serve`.
     # If user did not explicitly pass --host, choose based on X402_MODE.
     host = args.host
+    # M-2 FIX: Set X402_MODE default so gateway constructor doesn't crash.
+    # cli_main is an interactive entry point — defaulting to test is safe here.
+    os.environ.setdefault("X402_MODE", "test")
     is_test = os.getenv("X402_MODE", "test").lower() == "test"
     if host == "127.0.0.1" and not is_test:
         # Production mode: default to 0.0.0.0 (bind all interfaces)

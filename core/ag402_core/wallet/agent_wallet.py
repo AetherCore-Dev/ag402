@@ -63,6 +63,7 @@ class AgentWallet:
         self._db = await aiosqlite.connect(self.db_path, timeout=10.0)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute("PRAGMA synchronous=FULL")
 
         # Check if the transactions table already exists (schema version check)
         cursor = await self._db.execute(
@@ -81,9 +82,11 @@ class AgentWallet:
                     if bak_age > 86400:  # older than 24h
                         with contextlib.suppress(Exception):
                             shutil.copy2(self.db_path, bak_path)
+                            os.chmod(bak_path, 0o600)  # L-2 FIX: restrictive permissions
                 else:
                     with contextlib.suppress(Exception):
                         shutil.copy2(self.db_path, bak_path)
+                        os.chmod(bak_path, 0o600)  # L-2 FIX: restrictive permissions
             except Exception:
                 pass
 

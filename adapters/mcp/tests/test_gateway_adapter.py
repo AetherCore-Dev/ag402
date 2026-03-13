@@ -109,6 +109,7 @@ async def gateway_app(tmp_path) -> FastAPI:
     app = gateway.create_app()
     # Manually init the persistent guard (lifespan won't fire in ASGITransport)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
     yield app
     await gateway._persistent_guard.close()
 
@@ -315,6 +316,7 @@ async def test_prepaid_valid_credential_proxies_request(tmp_path) -> None:
     """Valid X-Prepaid-Credential bypasses on-chain verification and proxies."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
     mock_upstream_resp = _make_mock_upstream_response(body={"result": "prepaid-ok"})
@@ -343,6 +345,7 @@ async def test_prepaid_invalid_signature_returns_402(tmp_path) -> None:
     """Invalid HMAC → 402 with WWW-Authenticate so buyer can fall back."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
     bad_header = _make_signed_credential_header(signing_key="wrong_key")
@@ -366,6 +369,7 @@ async def test_prepaid_expired_credential_returns_402(tmp_path) -> None:
     """Expired credential → 402, buyer falls back to on-chain."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
     expired_header = _make_signed_credential_header(days_valid=-1)
@@ -397,6 +401,7 @@ async def test_prepaid_no_signing_key_falls_through_to_onchain(tmp_path) -> None
     )
     app = gateway.create_app()
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
 
@@ -420,6 +425,7 @@ async def test_prepaid_takes_priority_over_authorization_header(tmp_path) -> Non
     """When both X-Prepaid-Credential and Authorization are present, prepaid wins."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
     mock_upstream_resp = _make_mock_upstream_response(body={"ok": True})
@@ -452,6 +458,7 @@ async def test_prepaid_malformed_json_returns_402(tmp_path) -> None:
     """Garbage in X-Prepaid-Credential → 402, never 500."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     transport = ASGITransport(app=app)
 
@@ -476,6 +483,7 @@ async def test_list_packages_returns_all_tiers(tmp_path) -> None:
     """GET /prepaid/packages returns the 5 standard package tiers."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.get("/prepaid/packages")
@@ -497,6 +505,7 @@ async def test_list_packages_no_auth_required(tmp_path) -> None:
     """GET /prepaid/packages is publicly accessible — no payment needed."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.get("/prepaid/packages")
@@ -511,6 +520,7 @@ async def test_purchase_valid_package_issues_credential(tmp_path) -> None:
     """POST /prepaid/purchase with valid payload → 201 + credential JSON."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.post(
@@ -534,6 +544,7 @@ async def test_purchase_unknown_package_returns_400(tmp_path) -> None:
     """POST /prepaid/purchase with unknown package_id → 400."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.post(
@@ -562,6 +573,7 @@ async def test_purchase_without_signing_key_returns_503(tmp_path) -> None:
     )
     app = gateway.create_app()
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.post(
@@ -583,6 +595,7 @@ async def test_purchased_credential_verifies_locally(tmp_path) -> None:
 
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         resp = await client.post(
@@ -610,6 +623,7 @@ async def test_purchase_rate_limited_returns_429(tmp_path) -> None:
     # Crank rate limit down to 1 so we can exhaust it quickly
     gateway._rate_limiter._max = 1
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testgateway") as client:
         # First request: passes rate limit
@@ -787,6 +801,7 @@ async def test_purchase_idempotent_db_none_falls_back_to_onchain(tmp_path) -> No
     """When _prepaid_db is None (e.g. not initialized), gateway still issues a new credential."""
     gateway, app = _make_prepaid_gateway(tmp_path)
     await gateway._persistent_guard.init_db()
+    await gateway._init_prepaid_db()
     # Intentionally do NOT call _init_prepaid_db — simulates DB not available
     # _prepaid_db remains None
 

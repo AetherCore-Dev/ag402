@@ -381,15 +381,24 @@ class SolanaAdapter(BasePaymentProvider):
                 logger.info("[CONFIRM] Transaction %s at %s",
                             tx_hash[:16], self._confirmation_level)
             except asyncio.TimeoutError:
-                logger.warning(
-                    "[CONFIRM] Timed out waiting for %s confirmation of tx %s "
-                    "(tx may still succeed on-chain)",
-                    self._confirmation_level, tx_hash[:16],
+                # P-C1 FIX: Clearly flag as unconfirmed instead of silently succeeding.
+                # The tx was broadcast and may or may not confirm on-chain.
+                # Money is at risk — caller must handle this status appropriately.
+                confirmation_status = "unconfirmed"
+                logger.critical(
+                    "[CONFIRM] UNCONFIRMED: Timed out waiting for %s confirmation of tx %s. "
+                    "Transaction was broadcast but confirmation status is unknown. "
+                    "USDC may have been sent — manual verification recommended: "
+                    "https://solscan.io/tx/%s",
+                    self._confirmation_level, tx_hash[:16], tx_hash,
                 )
             except Exception as confirm_err:
-                logger.warning(
-                    "[CONFIRM] Confirmation wait failed (tx may still succeed): %s",
-                    confirm_err, exc_info=True,
+                confirmation_status = "unconfirmed"
+                logger.critical(
+                    "[CONFIRM] UNCONFIRMED: Confirmation wait failed for tx %s: %s. "
+                    "Transaction was broadcast but confirmation status is unknown. "
+                    "USDC may have been sent — manual verification recommended.",
+                    tx_hash[:16], confirm_err, exc_info=True,
                 )
 
             return PaymentResult(

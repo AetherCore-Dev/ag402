@@ -116,14 +116,27 @@ class X402PaymentProof:
 
         Format: x402 tx_hash="<hash>" payer_address="<addr>" chain="<chain>" request_id="<id>"
         Falls back to simple format if only tx_hash is available.
+
+        Raises ValueError if any field contains characters unsafe for HTTP
+        headers (CR, LF, double-quote) to prevent header injection.
         """
-        parts = [f'tx_hash="{self.tx_hash}"']
+        fields = {
+            "tx_hash": self.tx_hash,
+        }
         if self.payer_address:
-            parts.append(f'payer_address="{self.payer_address}"')
+            fields["payer_address"] = self.payer_address
         if self.chain:
-            parts.append(f'chain="{self.chain}"')
+            fields["chain"] = self.chain
         if self.request_id:
-            parts.append(f'request_id="{self.request_id}"')
+            fields["request_id"] = self.request_id
+
+        parts = []
+        for key, value in fields.items():
+            if _HEADER_UNSAFE_RE.search(value):
+                raise ValueError(
+                    f"Field {key!r} contains unsafe characters (CR/LF/quote): {value!r}"
+                )
+            parts.append(f'{key}="{value}"')
         return "x402 " + " ".join(parts)
 
 

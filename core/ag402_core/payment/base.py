@@ -19,8 +19,11 @@ class PaymentResult:
     """Confirmation status of the transaction.
 
     Possible values:
-    - ``"confirmed"`` — transaction confirmed at requested level
-    - ``"sent"`` — transaction sent but confirmation timed out (may still succeed on-chain)
+    - ``"confirmed"`` or ``"finalized"`` — transaction confirmed at requested level
+    - ``"unconfirmed"`` — transaction broadcast but confirmation timed out or failed;
+      money may be at risk; caller should log CRITICAL and verify manually
+    - ``"sent"`` — legacy alias, same semantics as ``"unconfirmed"``
+    - ``"failed"`` — transaction confirmed but failed on-chain (e.g. insufficient balance)
     - ``""`` — not applicable (mock, or failed before send)
     """
     request_id: str = ""

@@ -141,6 +141,7 @@ class PaymentOrderStore:
         self._db = await aiosqlite.connect(self.db_path, timeout=10.0)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute("PRAGMA synchronous=FULL")  # H-4 FIX: match all other SQLite stores
         await self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS payment_orders (

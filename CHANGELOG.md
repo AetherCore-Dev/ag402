@@ -26,6 +26,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Zero runtime dependencies; Node.js 18+; dual ESM + CJS
   - 100 tests across 3 files (wallet, protocol, fetch)
 
+## [0.1.18] - 2026-03-13
+
+### Security — 3-round multi-expert audit (30 fixes)
+
+> **BREAKING**: `X402_MODE` environment variable is now **required** when starting the gateway
+> without an explicit `verifier` argument. Set `X402_MODE=test` for development or
+> `X402_MODE=production` for real deployments. Previously, it defaulted silently to `test`.
+
+#### Round 1 — Core hardening (14 fixes)
+
+- **S-C1**: Server-side `prepaid_usage` SQLite table — prevents buyer from forging `remaining_calls`; credential key = SHA-256 of `buyer_address|package_id|signature`
+- **S-C2**: `X402_MODE` must be explicitly set (see BREAKING above)
+- **S-C3**: Production mode requires signing key >= 32 characters for HMAC-SHA256 security
+- **H-1**: `to_auth_header()` validates all fields against CR/LF/quote injection via regex
+- **H-2**: SSRF check on `target_url` — warns on private/reserved IPs (localhost exempted)
+- **H-5**: `security.yml` — `pip-audit || true` → `pip-audit` (no longer silently swallows failures)
+- **M-5**: `X-Prepaid-Credential` header capped at 4096 bytes
+- **M-6**: `replay_guard` auto-prunes entries older than 7 days on startup
+- **M-body**: Request body limited to 10 MB (Content-Length + actual read double-check)
+- **P-C1**: Payment confirmation timeout → `confirmation_status="unconfirmed"` + CRITICAL log with Solscan link
+- **P-C2**: Removed dead signal handler; simplified lifespan to rely on uvicorn's native shutdown
+- **L-2**: Wallet backup file restricted to `chmod 0o600`
+- **L-6**: Prepaid credential file restricted to `chmod 0o600`
+- **Config**: `_env_float` / `_env_int` reject negative, NaN, and Infinity values
+- **SQLite**: All DB connections (replay_guard, agent_wallet, prepaid_db) now use `PRAGMA synchronous=FULL`
+
+#### Round 2 — Architecture hardening (10 fixes)
+
+- **H-1**: Prepaid counter exception handling changed from fail-open to **fail-closed** (returns 503)
+- **H-2**: Consolidated dual SQLite connections — gateway reuses `PersistentReplayGuard.db` instead of opening a second connection to the same file
+- **H-3**: `_record_prepaid_issued` and `_check_and_deduct_prepaid_usage` return False when DB unavailable (fail-closed)
+- **H-4**: `PaymentOrderStore` added `PRAGMA synchronous=FULL` (was the only SQLite store missing it)
+- **M-1**: `Content-Length` header parsing wrapped in try/except (malformed value no longer crashes with 500)
+- **M-2**: `cli_main` sets `os.environ.setdefault("X402_MODE", "test")` for consistency with constructor
+- **M-3**: `prepaid_usage` table now has `created_at` column + startup pruning of records > 366 days
+- **M-4**: `os.getuid()` / `os.getgid()` guarded with `hasattr(os, "getuid")` for Windows compatibility
+- **M-5**: Production mode **requires** explicit `address` — placeholder address rejected to prevent money loss
+- **M-6**: CI security: `trivy-action@master` → `trivy-action@0.28.0`; `semgrep/semgrep` → `semgrep/semgrep:1.67.0`
+
+#### Round 3 — Regression fix (5 fixes)
+
+- **CRITICAL**: Fixed `_is_test_mode` use-before-assignment — moved `X402_MODE` computation before address validation
+- **HIGH**: Purchase path now returns 503 when DB unavailable instead of silently issuing unrecorded credentials
+- **LOW**: Shutdown ordering — `_prepaid_db` nulled before closing guard connection (clean fail-closed for in-flight requests)
+- **LOW**: Pre-migration `prepaid_usage` rows (created_at=0) now pruned at startup
+- **MEDIUM**: Semgrep container image pinned to `1.67.0`
+
+### Changed
+
+- Test suite: **96 passed** (unchanged baseline; gateway 26 + verifier 21 + integration 50 - 1 pre-existing Windows skip)
+
 ## [0.1.17] - 2026-03-10
 
 ### Added
@@ -259,6 +310,7 @@ This release includes comprehensive security fixes identified through deep code 
 - `cli.py`: `ag402 serve` now prints seller security reminder on startup
 - `llms.txt`: Enhanced Sell Skill and added Red Flags section for LLM agents
 
+[0.1.18]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.17...v0.1.18
 [0.1.14]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/AetherCore-Dev/ag402/compare/v0.1.11...v0.1.12

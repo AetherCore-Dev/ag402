@@ -87,8 +87,9 @@ def clear_decrypted_private_key() -> None:
 
 
 def _env_float(name: str, default: float, ceiling: float) -> float:
-    """Read a float from env, clamped to ceiling."""
+    """Read a float from env, clamped to ceiling. Rejects negative and NaN values."""
     import logging as _log
+    import math
 
     raw = os.getenv(name, str(default))
     try:
@@ -98,11 +99,26 @@ def _env_float(name: str, default: float, ceiling: float) -> float:
             "Invalid value for %s='%s', falling back to default %.2f", name, raw, default
         )
         val = default
-    return min(val, ceiling)
+    if math.isnan(val) or math.isinf(val):
+        _log.getLogger(__name__).warning(
+            "%s=%s is NaN/Infinity — using default %.2f instead", name, raw, default,
+        )
+        val = default
+    if val < 0:
+        _log.getLogger(__name__).warning(
+            "%s=%s is negative — using 0 instead", name, raw,
+        )
+        val = 0.0
+    if val > ceiling:
+        _log.getLogger(__name__).warning(
+            "%s=%.2f exceeds ceiling %.2f — clamped to %.2f", name, val, ceiling, ceiling,
+        )
+        val = ceiling
+    return val
 
 
 def _env_int(name: str, default: int, ceiling: int) -> int:
-    """Read an int from env, clamped to ceiling."""
+    """Read an int from env, clamped to ceiling. Rejects negative values."""
     import logging as _log
 
     raw = os.getenv(name, str(default))
@@ -113,7 +129,17 @@ def _env_int(name: str, default: int, ceiling: int) -> int:
             "Invalid value for %s='%s', falling back to default %d", name, raw, default
         )
         val = default
-    return min(val, ceiling)
+    if val < 0:
+        _log.getLogger(__name__).warning(
+            "%s=%s is negative — using 0 instead", name, raw,
+        )
+        val = 0
+    if val > ceiling:
+        _log.getLogger(__name__).warning(
+            "%s=%d exceeds ceiling %d — clamped to %d", name, val, ceiling, ceiling,
+        )
+        val = ceiling
+    return val
 
 
 @dataclass(frozen=True)

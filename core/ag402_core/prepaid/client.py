@@ -75,6 +75,9 @@ def _save(credentials: list[dict]) -> None:
         with os.fdopen(tmp_fd, "w") as f:
             json.dump(credentials, f, indent=2, default=str)
         os.replace(tmp_path, _CREDENTIALS_FILE)
+        # L-6 FIX: Set restrictive file permissions on credential file
+        with contextlib.suppress(OSError, NotImplementedError):
+            os.chmod(_CREDENTIALS_FILE, 0o600)
     except Exception:
         # Best-effort cleanup of temp file on failure
         with contextlib.suppress(OSError):

@@ -142,33 +142,49 @@ class PersistentReplayGuard:
         self.grace_seconds = grace_seconds
         self._db: aiosqlite.Connection | None = None
 
+    @property
+    def db(self) -> aiosqlite.Connection | None:
+        """Expose the underlying DB connection for shared-table usage.
+
+        The gateway uses this to create prepaid tables on the same connection,
+        avoiding dual-connection issues (SQLITE_BUSY, deadlocks) when two
+        independent connections write to the same file.
+        """
+        return self._db
+
     async def init_db(self) -> None:
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
             try:
                 os.makedirs(db_dir, exist_ok=True)
             except PermissionError as e:
+                # M-4 FIX: os.getuid/getgid don't exist on Windows
+                uid_info = f"uid: {os.getuid()}" if hasattr(os, "getuid") else "user: N/A (Windows)"
                 raise PermissionError(
                     f"Cannot create directory {db_dir} — permission denied. "
-                    f"Current user uid: {os.getuid()}, parent dir owner: {os.stat(os.path.dirname(db_dir)).st_uid}. "
-                    f"For Docker: ensure volume mount has correct ownership (chown -R {os.getuid()} {db_dir})"
+                    f"Current {uid_info}. "
+                    f"For Docker: ensure volume mount has correct ownership."
                 ) from e
 
         # Pre-flight permission check: provide a clear error message instead of
         # the opaque sqlite3.OperationalError when the directory is not writable.
         if db_dir and os.path.isdir(db_dir) and not os.access(db_dir, os.W_OK):
             stat_info = os.stat(db_dir)
+            uid_info = (
+                f"uid: {os.getuid()}, dir owner uid: {stat_info.st_uid}, "
+                f"dir mode: {oct(stat_info.st_mode)[-3:]}"
+                if hasattr(os, "getuid")
+                else f"dir mode: {oct(stat_info.st_mode)[-3:]}"
+            )
             raise PermissionError(
                 f"Cannot write to {db_dir} — check directory permissions. "
-                f"Current user uid: {os.getuid()}, dir owner uid: {stat_info.st_uid}, "
-                f"dir mode: {oct(stat_info.st_mode)[-3:]}. "
-                f"For Docker: run 'docker exec <container> chown -R {os.getuid()} {db_dir}' "
-                f"or add 'user: \"{os.getuid()}:{os.getgid()}\"' to docker-compose.yml"
+                f"Current {uid_info}."
             )
 
         self._db = await aiosqlite.connect(self.db_path, timeout=10.0)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute("PRAGMA synchronous=FULL")
         await self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS consumed_tx_hashes (
@@ -199,6 +215,11 @@ class PersistentReplayGuard:
                 "ALTER TABLE consumed_tx_hashes ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0"
             )
         await self._db.commit()
+
+        # M-6 FIX: Auto-prune stale entries on startup (7-day default)
+        pruned = await self.prune()
+        if pruned:
+            logger.info("[REPLAY] Auto-pruned %d stale entries on startup", pruned)
 
     async def close(self) -> None:
         if self._db:
