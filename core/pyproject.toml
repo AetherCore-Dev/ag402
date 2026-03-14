@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ag402-core"
-version = "0.1.18"
+version = "0.1.19"
 description = "Payment engine for AI Agents — automatic HTTP 402 payment with Solana USDC"
 license = "MIT"
 readme = "README.md"
@@ -12,10 +12,10 @@ requires-python = ">=3.10"
 authors = [{ name = "Ag402 Team" }]
 keywords = ["ai-agent", "payment", "x402", "solana", "usdc"]
 dependencies = [
-    "open402>=0.1.0",
-    "httpx>=0.27.0",
-    "aiosqlite>=0.19.0",
-    "cryptography>=41.0.0",
+    "open402>=0.1.0,<1.0.0",
+    "httpx>=0.27.0,<1.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "cryptography>=41.0.0,<44.0.0",
 ]
 
 [project.urls]
@@ -26,7 +26,7 @@ Issues = "https://github.com/AetherCore-Dev/ag402/issues"
 Changelog = "https://github.com/AetherCore-Dev/ag402/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-crypto = ["solana>=0.34.0", "solders>=0.21.0", "base58>=2.1.0"]
+crypto = ["solana>=0.34.0,<1.0.0", "solders>=0.21.0,<1.0.0", "base58>=2.1.0,<3.0.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

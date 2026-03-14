@@ -1,6 +1,6 @@
 {
   "name": "@ag402/fetch",
-  "version": "0.1.0",
+  "version": "0.1.19",
   "description": "TypeScript SDK for x402 auto-payment — wraps fetch() to handle HTTP 402 Payment Required",
   "type": "module",
   "main": "./dist/index.cjs",

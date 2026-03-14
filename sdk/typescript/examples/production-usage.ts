@@ -48,7 +48,7 @@ async function devnetExample() {
     config: {
       maxAmountPerCall: 1.00,  // reject challenges > $1 per call
       maxTotalSpend: 5.00,     // stop after $5 total spend this session
-      debug: true,             // log payment events to console
+      debug: false,            // set to true for payment event logging
     },
     // If provider.pay() doesn't resolve in 30 s, wallet deduction is
     // rolled back automatically. Increase for slow RPC endpoints.

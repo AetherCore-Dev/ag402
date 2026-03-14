@@ -22,7 +22,7 @@ async function main() {
     config: {
       maxAmountPerCall: 1.00,   // reject anything over $1/call
       maxTotalSpend: 5.00,      // stop after $5 total
-      debug: true,              // log payment events
+      debug: false,             // set to true for payment event logging
     },
   });
 

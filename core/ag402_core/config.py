@@ -148,6 +148,9 @@ class X402Config:
 
     # --- Core ---
     mode: RunMode = field(default_factory=lambda: RunMode(os.getenv("X402_MODE", "test")))
+    # WARNING: X402_MODE defaults to "test" if unset. The gateway layer (ag402_mcp)
+    # enforces explicit mode selection before starting, but direct X402Config()
+    # callers should always set X402_MODE explicitly in production.
     network: NetworkMode = field(
         default_factory=lambda: NetworkMode(os.getenv("X402_NETWORK", "mock"))
     )
@@ -301,6 +304,13 @@ def load_config() -> X402Config:
     from ag402_core.env_manager import load_dotenv
 
     load_dotenv()  # ~/.ag402/.env → os.environ (no override)
+
+    if not os.getenv("X402_MODE"):
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "X402_MODE is not set — defaulting to 'test'. "
+            "Set X402_MODE=production for real deployments."
+        )
 
     # Auto-decrypt wallet.key if plaintext key is not available
     if not os.getenv("SOLANA_PRIVATE_KEY") and not _decrypted_private_key:

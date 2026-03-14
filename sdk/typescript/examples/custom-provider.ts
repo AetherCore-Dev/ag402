@@ -61,7 +61,7 @@ async function main() {
   const apiFetch = createX402Fetch({
     wallet,
     provider: myProvider,
-    config: { maxAmountPerCall: 2.00, debug: true },
+    config: { maxAmountPerCall: 2.00, debug: false },
     paymentTimeoutMs: 15_000, // 15s timeout; wallet rolled back if exceeded
   });
 
