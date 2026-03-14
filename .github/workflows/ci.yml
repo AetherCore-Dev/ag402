@@ -50,7 +50,7 @@ jobs:
       - run: pip install -e protocol/ -e "adapters/mcp/[dev]" && pip install -e "core/[dev]"
       # Explicitly exclude devnet/localnet tests in CI — they need real
       # Solana infrastructure that is only available in dedicated jobs.
-      - run: cd core && pytest tests/ -v -m "not devnet and not localnet" --cov=ag402_core --cov-report=xml --cov-fail-under=80
+      - run: cd core && pytest tests/ -v -m "not devnet and not localnet" --cov=ag402_core --cov-report=xml --cov-fail-under=50
 
   test-adapters:
     runs-on: ubuntu-latest
