@@ -86,6 +86,7 @@ class TestGatewayTestModeSafety:
                 X402Gateway(
                     target_url="http://localhost:8000",
                     price="0.02",
+                    address="GtwRecipientAddr1111111111111111111111111111",
                 )
 
     def test_gateway_allows_test_mode_without_verifier(self):
