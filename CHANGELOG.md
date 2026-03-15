@@ -26,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Zero runtime dependencies; Node.js 18+; dual ESM + CJS
   - 100 tests across 3 files (wallet, protocol, fetch)
 
+## [0.1.20] - 2026-03-15
+
+### Fixed
+
+- **Critical: double-decompression bug** — when upstream responses include `Content-Encoding: gzip` (e.g. behind Cloudflare/CDN), the monkey-patch re-wrapped the already-decoded body with the original encoding headers, causing `zlib error: incorrect header check`. Payment succeeded but the response body was unreadable. (`x402_middleware.py`, `monkey.py`)
+- **Critical: silent data truncation** — `Content-Length` header reflected the compressed wire size, not the decoded body size. Consumers reading `Content-Length` bytes would silently truncate 50-90% of response data. (`x402_middleware.py`)
+- **2 missed response paths** — retry-success and retry-failure paths in the middleware still used raw `dict(response.headers)` instead of the safe `_decoded_headers()` helper. These are the highest-frequency production paths (post-payment retry). (`x402_middleware.py`)
+- **Forward proxy defense-in-depth** — added `content-encoding` to the header strip list, aligning with the gateway adapter's existing behavior. (`forward_proxy.py`)
+- **requests monkey-patch** — constructed `requests.Response` was missing `url` (crashes `raise_for_status()`) and `encoding` (incorrect charset detection for `resp.text`). (`monkey.py`)
+
+### Added
+
+- `X402PaymentMiddleware._decoded_headers()` — static helper that strips `content-encoding`, `transfer-encoding`, and `content-length` from response headers. All 9 `MiddlewareResult` construction paths now use this method.
+- 3 regression tests: gzip double-decompression, transfer-encoding stripping, content-length mismatch after decompression. (`test_monkey.py`)
+
 ## [0.1.18] - 2026-03-13
 
 ### Security — 3-round multi-expert audit (30 fixes)

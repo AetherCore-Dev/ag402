@@ -10,7 +10,7 @@ Quick start::
         resp = httpx.get("https://paid-api.example.com/data")
 """
 
-__version__ = "0.1.17"
+__version__ = "0.1.20"
 
 from ag402_core.monkey import disable, enable, enabled, is_enabled
 

@@ -191,7 +191,7 @@ class X402PaymentMiddleware:
             logger.warning("[VALIDATE] Challenge rejected: %s", validation.error)
             return MiddlewareResult(
                 status_code=402,
-                headers=dict(response.headers),
+                headers=self._decoded_headers(response),
                 body=response.content,
                 error=f"Challenge validation failed: {validation.error}",
             )
@@ -212,7 +212,7 @@ class X402PaymentMiddleware:
                 logger.warning("[BUDGET] Payment blocked: %s", budget_result.reason)
                 return MiddlewareResult(
                     status_code=402,
-                    headers=dict(response.headers),
+                    headers=self._decoded_headers(response),
                     body=response.content,
                     error=f"Budget denied: {budget_result.reason}",
                 )
@@ -258,7 +258,7 @@ class X402PaymentMiddleware:
             )
             return MiddlewareResult(
                 status_code=402,
-                headers=dict(response.headers),
+                headers=self._decoded_headers(response),
                 body=response.content,
                 error=f"Payment failed: {payment_result.error}",
             )
@@ -305,7 +305,7 @@ class X402PaymentMiddleware:
                 await self._save_order(order)
             return MiddlewareResult(
                 status_code=retry_response.status_code,
-                headers=dict(retry_response.headers),
+                headers=self._decoded_headers(retry_response),
                 body=retry_response.content,
                 payment_made=True,
                 tx_hash=payment_result.tx_hash,
@@ -318,7 +318,7 @@ class X402PaymentMiddleware:
         logger.info("[SUCCESS] Request completed after payment ($%.4f)", amount)
         return MiddlewareResult(
             status_code=retry_response.status_code,
-            headers=dict(retry_response.headers),
+            headers=self._decoded_headers(retry_response),
             body=retry_response.content,
             payment_made=True,
             tx_hash=payment_result.tx_hash,
@@ -489,7 +489,7 @@ class X402PaymentMiddleware:
             )
             return MiddlewareResult(
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=self._decoded_headers(response),
                 body=response.content,
             )
 
@@ -499,17 +499,41 @@ class X402PaymentMiddleware:
         )
         return MiddlewareResult(
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=self._decoded_headers(response),
             body=response.content,
             payment_made=True,
             tx_hash="prepaid",
             amount_paid=0.0,
         )
 
+    @staticmethod
+    def _decoded_headers(response: httpx.Response) -> dict[str, str]:
+        """Return response headers with encoding/length headers stripped.
+
+        ``httpx.Response.content`` is already decoded (gzip/deflate/br
+        transparent decompression).  We must strip:
+
+        - ``content-encoding``: body is already decompressed; keeping it
+          causes the reconstructed response to double-decompress
+          (``zlib error: incorrect header check``).
+        - ``transfer-encoding``: no longer applicable to the buffered body.
+        - ``content-length``: reflects the *compressed* wire size, not the
+          decoded body size.  Keeping it causes silent truncation when the
+          consumer reads only ``content-length`` bytes from a larger
+          decompressed body.  httpx/Starlette will recalculate it from
+          the actual ``content`` parameter.
+        """
+        return {
+            k: v for k, v in response.headers.items()
+            if k.lower() not in (
+                "content-encoding", "transfer-encoding", "content-length",
+            )
+        }
+
     def _wrap_response(self, response: httpx.Response) -> MiddlewareResult:
         """Wrap an httpx Response into a MiddlewareResult."""
         return MiddlewareResult(
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=self._decoded_headers(response),
             body=response.content,
         )

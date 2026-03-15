@@ -389,3 +389,156 @@ class TestDisableCleanup:
         assert new_mw is not old_mw, (
             "Re-enable reused old middleware instead of creating fresh one"
         )
+
+
+class TestGzipResponseHandling:
+    """Ensure gzip-encoded upstream responses don't cause double-decompression."""
+
+    @pytest.mark.asyncio
+    async def test_gzip_response_no_double_decompress(self, tmp_path):
+        """When upstream returns Content-Encoding: gzip, the monkey-patch must
+        strip encoding headers from the re-wrapped response to prevent httpx
+        from attempting to decompress already-decoded content.
+
+        Regression test for: zlib error: incorrect header check
+        (paid successfully but body couldn't be read due to double-decompression)
+        """
+        import gzip
+
+        from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
+        from ag402_core.payment.solana_adapter import MockSolanaAdapter
+
+        from tests.conftest import SequentialTransport, _402_headers, _make_config, _make_wallet
+
+        # Prepare a gzip-compressed body (simulating what Cloudflare/CDN sends)
+        plain_body = b'{"report": "audit data", "status": "ok"}'
+        gzip_body = gzip.compress(plain_body)
+
+        # Response sequence: first 402 challenge, then 200 with gzip body
+        transport = SequentialTransport([
+            (402, _402_headers(amount="0.01"), b"Payment required"),
+            (200, {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+            }, gzip_body),
+        ])
+
+        wallet = await _make_wallet(tmp_path, balance=100.0)
+        provider = MockSolanaAdapter()
+        config = _make_config()
+
+        mw_client = httpx.AsyncClient(transport=transport)
+        mw = X402PaymentMiddleware(wallet, provider, config, http_client=mw_client)
+
+        monkey_mod._middleware = mw
+        monkey_mod._middleware._wallet_initialized = True
+        ag402_core.enable()
+
+        user_client = httpx.AsyncClient(transport=transport)
+        try:
+            resp = await user_client.get("https://example.com/paid-api")
+            # Must succeed — NOT raise zlib error
+            assert resp.status_code == 200
+            # Body must be the decoded plaintext, not garbled
+            assert resp.json() == {"report": "audit data", "status": "ok"}
+            # content-encoding must NOT be in the final response headers
+            assert "content-encoding" not in resp.headers
+        finally:
+            await user_client.aclose()
+            await mw_client.aclose()
+            await wallet.close()
+
+    @pytest.mark.asyncio
+    async def test_transfer_encoding_stripped(self, tmp_path):
+        """transfer-encoding header must also be stripped from re-wrapped responses."""
+        from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
+        from ag402_core.payment.solana_adapter import MockSolanaAdapter
+
+        from tests.conftest import SequentialTransport, _402_headers, _make_config, _make_wallet
+
+        transport = SequentialTransport([
+            (402, _402_headers(amount="0.01"), b"Payment required"),
+            (200, {
+                "content-type": "text/plain",
+                "transfer-encoding": "chunked",
+            }, b"hello world"),
+        ])
+
+        wallet = await _make_wallet(tmp_path, balance=100.0)
+        provider = MockSolanaAdapter()
+        config = _make_config()
+
+        mw_client = httpx.AsyncClient(transport=transport)
+        mw = X402PaymentMiddleware(wallet, provider, config, http_client=mw_client)
+
+        monkey_mod._middleware = mw
+        monkey_mod._middleware._wallet_initialized = True
+        ag402_core.enable()
+
+        user_client = httpx.AsyncClient(transport=transport)
+        try:
+            resp = await user_client.get("https://example.com/paid-api")
+            assert resp.status_code == 200
+            assert resp.text == "hello world"
+            assert "transfer-encoding" not in resp.headers
+        finally:
+            await user_client.aclose()
+            await mw_client.aclose()
+            await wallet.close()
+
+    @pytest.mark.asyncio
+    async def test_content_length_matches_decoded_body(self, tmp_path):
+        """content-length must reflect the decoded body size, not the compressed
+        wire size.  If stale content-length is passed through, consumers may
+        silently truncate the response.
+
+        Regression test for: silent data truncation after gzip decompression.
+        """
+        import gzip
+
+        from ag402_core.middleware.x402_middleware import X402PaymentMiddleware
+        from ag402_core.payment.solana_adapter import MockSolanaAdapter
+
+        from tests.conftest import SequentialTransport, _402_headers, _make_config, _make_wallet
+
+        # Large payload so compressed vs uncompressed sizes differ significantly
+        plain_body = b'{"data": "' + b'x' * 1000 + b'", "status": "ok"}'
+        gzip_body = gzip.compress(plain_body)
+        assert len(gzip_body) < len(plain_body), "test setup: gzip must shrink body"
+
+        transport = SequentialTransport([
+            (402, _402_headers(amount="0.01"), b"Payment required"),
+            (200, {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                "content-length": str(len(gzip_body)),  # compressed size
+            }, gzip_body),
+        ])
+
+        wallet = await _make_wallet(tmp_path, balance=100.0)
+        provider = MockSolanaAdapter()
+        config = _make_config()
+
+        mw_client = httpx.AsyncClient(transport=transport)
+        mw = X402PaymentMiddleware(wallet, provider, config, http_client=mw_client)
+
+        monkey_mod._middleware = mw
+        monkey_mod._middleware._wallet_initialized = True
+        ag402_core.enable()
+
+        user_client = httpx.AsyncClient(transport=transport)
+        try:
+            resp = await user_client.get("https://example.com/paid-api")
+            assert resp.status_code == 200
+            # Full body must be readable (no truncation)
+            body = resp.content
+            assert len(body) == len(plain_body), (
+                f"Body truncated: got {len(body)} bytes, expected {len(plain_body)}"
+            )
+            # content-length in headers must match actual body (or be absent)
+            if "content-length" in resp.headers:
+                assert int(resp.headers["content-length"]) == len(body)
+        finally:
+            await user_client.aclose()
+            await mw_client.aclose()
+            await wallet.close()

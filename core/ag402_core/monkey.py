@@ -412,6 +412,10 @@ def _patch_requests() -> None:
             new_resp.headers.update(result.headers)
             new_resp._content = result.body if isinstance(result.body, bytes) else result.body.encode() if result.body else b""
             new_resp.request = request
+            new_resp.url = request.url or ""
+            new_resp.encoding = new_resp.headers.get(
+                "content-type", ""
+            ).partition("charset=")[2].partition(";")[0].strip() or "utf-8"
             return new_resp
 
         except Exception:

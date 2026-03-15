@@ -122,7 +122,7 @@ Prepaid system hardening — buyer-side HMAC credential flow + gateway-side veri
 | P4 | Low | `ag402 prepaid buy` (production mode): explicit `[Y/n]` confirmation gate before irreversible on-chain broadcast |
 | P5 | Low | `ag402 prepaid buy`: gateway-supplied price validated against `cfg.single_tx_limit` before broadcast |
 
-Total: **648+ tests** passing, 0 regressions.
+Total: **775+ tests** passing, 0 regressions.
 
 ## Responsible Disclosure
 

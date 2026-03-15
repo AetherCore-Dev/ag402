@@ -212,7 +212,7 @@ class X402ForwardProxy:
                     self.send_response(result.status_code)
                     for key, value in result.headers.items():
                         lower = key.lower()
-                        if lower not in ("transfer-encoding", "connection", "content-length"):
+                        if lower not in ("transfer-encoding", "connection", "content-length", "content-encoding"):
                             self.send_header(key, value)
 
                     response_body = result.body if isinstance(result.body, bytes) else b""
