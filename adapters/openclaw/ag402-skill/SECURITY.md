@@ -56,5 +56,6 @@ Do NOT report via GitHub issues.
 
 | Version | Date | Security Changes |
 |---------|------|------------------|
-| v0.1.12 | 2026-03-06 | Full security audit fixes |
+| v0.1.18 | 2026-03-17 | 3-round multi-expert audit — 30 fixes: fail-closed DB paths, X402_MODE explicit, signing key ≥32 chars, header injection, SSRF, replay auto-cleanup, 10 MB body cap, SQLite PRAGMA |
+| v0.1.12 | 2026-03-06 | Full security audit fixes: SSRF, auth, race condition, input validation, header whitelist |
 | v0.1.11 | Earlier | Initial release |

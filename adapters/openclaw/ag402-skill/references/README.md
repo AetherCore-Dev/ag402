@@ -11,41 +11,23 @@ This directory contains additional documentation for integrating ag402 with Open
 
 ## Overview
 
-The ag402 skill enables OpenClaw agents to make autonomous payments for API calls using the x402 payment protocol. 
+The ag402 skill enables OpenClaw agents to make autonomous payments for API calls using the x402 payment protocol on Solana (USDC).
+
+OpenClaw skills are markdown instruction files injected into the agent's system prompt. The agent uses its native `exec` tool to run `ag402` CLI commands.
 
 ## Architecture
-
-### Components
-
-1. **ag402 Skill** (`ag402-skill/`)
-   - Skill metadata and management
-   - Tool definitions
-   - Documentation
-
-2. **ag402-openclaw Bridge** (`../ag402_openclaw/`)
-   - Python SDK for OpenClaw integration
-   - Bridge between OpenClaw and ag402 core
-
-3. **Client MCP** (`../client_mcp/`)
-   - MCP server providing tools to OpenClaw
-   - Function definitions for payment operations
-
-### Data Flow
 
 ```
 OpenClaw Agent
       │
-      ▼
-ag402 Skill (selects/routes)
-      │
-      ▼
-MCP Tools (function calls)
-      │
-      ▼
-ag402-openclaw Bridge (SDK)
+      ▼ (exec)
+ag402 CLI
       │
       ▼
 ag402 Core (protocol logic)
+      │
+      ▼
+x402 Protocol (HTTP 402 → pay → retry)
       │
       ▼
 Solana/USDC (on-chain settlement)
@@ -53,7 +35,7 @@ Solana/USDC (on-chain settlement)
 
 ## Integration Steps
 
-### 1. Install Dependencies
+### 1. Install ag402
 
 ```bash
 pip install ag402-core
@@ -61,96 +43,102 @@ pip install ag402-core
 
 ### 2. Setup Wallet
 
+For autonomous agents (non-interactive):
+
+```bash
+ag402 init
+```
+
+For interactive setup (human present):
+
 ```bash
 ag402 setup
 ```
 
-This creates a wallet and funds it with test USDC.
+### 3. Install the Skill
 
-### 3. Configure OpenClaw
-
-Add the skill to your OpenClaw configuration:
-
-```json
-{
-  "skills": ["ag402"]
-}
-```
+Copy the `ag402-skill/` directory to your OpenClaw skills folder. The skill requires the `ag402` binary on PATH (declared via `metadata.openclaw.requires.bins`).
 
 ### 4. Verify Integration
 
-```python
-from ag402_openclaw import AG402Bridge
+In OpenClaw, ask the agent to check the wallet:
 
-bridge = AG402Bridge()
-balance = bridge.check_balance()
-print(f"Balance: {balance}")
+```bash
+ag402 balance
+```
+
+Then test a payment:
+
+```bash
+ag402 pay https://api.example.com/data
 ```
 
 ## Security
 
 ### Best Practices
 
-1. **Dedicated Payment Wallet** - Don't use your main wallet
-2. **Spending Limits** - Set max amount per transaction
-3. **Transaction Verification** - Always verify on-chain
-4. **Logging** - Maintain audit trail
+1. **Dedicated Payment Wallet** — Don't use your main wallet
+2. **Spending Limits** — Configure daily and per-minute caps
+3. **Test Mode First** — Always test with virtual funds before production
+4. **Audit Trail** — Review transactions with `ag402 history`
 
 ### Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `AG402_WALLET_PATH` | Path to wallet file | Yes |
-| `AG402_RPC_URL` | Solana RPC endpoint | No (devnet default) |
-| `AG402_MCP_SERVER` | MCP server URL | No (local default) |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `X402_MODE` | `test` or `production` | Must be set explicitly |
+| `X402_NETWORK` | `mainnet`, `devnet`, `localnet` | `devnet` |
+| `SOLANA_RPC_URL` | Solana RPC endpoint | Public devnet |
+| `X402_DAILY_LIMIT` | Max spend per day (USD) | `10` |
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Insufficient Balance**
-   - Check balance: `bridge.check_balance()`
-   - Fund wallet: `ag402 setup` or transfer USDC
+1. **`ag402: command not found`**
+   - Install: `pip install ag402-core`
 
-2. **Transaction Failed**
-   - Verify network connectivity
+2. **Insufficient Balance**
+   - Check balance: `ag402 balance`
+   - Fund wallet: `ag402 init` (test mode)
+
+3. **Transaction Failed**
+   - Verify network: `ag402 doctor`
    - Check Solana RPC status
-   - Review transaction logs
 
-3. **Wallet Not Found**
-   - Run `ag402 setup` to initialize
-   - Check `AG402_WALLET_PATH` environment variable
+4. **Wallet Not Found**
+   - Run `ag402 init` to initialize
 
 ## Examples
 
-### Basic Payment
+### Basic Payment Flow
 
-```python
-from ag402_openclaw import AG402Bridge
+```bash
+# Check balance
+ag402 balance
 
-bridge = AG402Bridge()
+# Make a paid API call
+ag402 pay https://api.example.com/data
 
-# Check balance before payment
-balance = bridge.check_balance()
-print(f"Current balance: {balance}")
-
-# Make payment (handled automatically for 402 responses)
-# Enable auto-pay mode
-bridge.enable_autopay(max_amount=5.0)
+# Check transaction history
+ag402 history
 ```
 
-### Handle 402 Manually
+### Production Mode
 
-```python
-# If auto-pay is disabled
-if response.status_code == 402:
-    result = bridge.handle_402_response(response, original_request)
-    print(f"Payment completed: {result}")
+```bash
+# Configure for production
+ag402 env set X402_MODE production
+ag402 env set X402_NETWORK mainnet
+ag402 env set SOLANA_RPC_URL https://your-rpc-url.com
+
+# Make payment
+ag402 pay https://api.example.com/premium
 ```
 
 ## Resources
 
 - [ag402 Main README](../../README.md)
 - [Protocol Documentation](../../docs/)
+- [SKILL.md](../SKILL.md) — Full command reference
 - [Solana Docs](https://docs.solana.com/)
-- [x402 Protocol](https://github.com/402protocol)
