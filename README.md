@@ -160,6 +160,33 @@ Agent → GET /v1/audit/{token}
 
 </td>
 </tr>
+
+<tr>
+<td width="55%">
+
+### [DeepBlue API](https://deepblue.fyi/) — Featured Example
+
+**Real-time BTC/ETH/SOL trading signals** for AI agents at **$0.001 USDC per call** — perfect for demonstrating x402 micropayments.
+
+- Ultra-low cost: $0.001 per API call — ideal for testing and demonstrations
+- Real trading signals: BTC, ETH, SOL market analysis and predictions
+- **Seller**: DeepBlue uses x402 protocol for instant micropayments
+- **Buyer**: Agents auto-pay via ag402 — zero code changes needed
+- **Ecosystem integration**: Featured in ag402 documentation as a showcase example
+
+</td>
+<td width="45%">
+
+```
+Agent → GET /api/signals/BTC
+     ← 402 Payment Required ($0.001)
+     → Ag402 pays USDC on Solana
+     → Retries with payment proof
+     ← 200 OK + trading signals
+```
+
+</td>
+</tr>
 </table>
 
 > Not a demo. Real USDC, real Solana mainnet, real users, already running.
