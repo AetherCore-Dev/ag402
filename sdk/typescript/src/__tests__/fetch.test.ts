@@ -139,11 +139,12 @@ describe("createX402Fetch — Authorization header injection", () => {
 
   it("preserves POST body in retry request", async () => {
     const wallet = new InMemoryWallet(100);
-    const capturedInits: RequestInit[] = [];
+    const captured: Array<{ method: string; body: string; headers: Headers }> = [];
 
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      capturedInits.push(init ?? {});
-      return capturedInits.length === 1 ? make402() : make200();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      captured.push({ method: request.method, body: await request.text(), headers: request.headers });
+      return captured.length === 1 ? make402() : make200();
     });
     const x402fetch = createX402Fetch({ wallet, fetchImpl });
 
@@ -154,9 +155,9 @@ describe("createX402Fetch — Authorization header injection", () => {
       body,
     });
 
-    expect(capturedInits[1].body).toBe(body);
-    expect(capturedInits[1].method).toBe("POST");
-    const retryHeaders = new Headers(capturedInits[1].headers);
+    expect(captured[1].body).toBe(body);
+    expect(captured[1].method).toBe("POST");
+    const retryHeaders = captured[1].headers;
     expect(retryHeaders.get("content-type")).toBe("application/json");
   });
 });
